@@ -1,0 +1,7 @@
+{"type": "session_meta", "payload": {"id": "019f7002-0000-7000-8000-000000000002", "session_id": "shared-000", "originator": "codex-tui", "thread_source": "user", "cli_version": "0.144.4", "forked_from_id": null, "cwd": "/home/u/proj"}}
+{"type": "turn_context", "payload": {"model": "gpt-5.6-luna"}}
+{"type": "response_item", "payload": {"type": "reasoning", "text": "thinking"}}
+{"type": "event_msg", "payload": {"type": "user_message", "message": "optimize the query"}, "timestamp": "2026-07-11T09:05:01Z"}
+{"type": "event_msg", "payload": {"type": "token_count", "total": 1234}}
+{"type": "some_future_top_level_type", "payload": {"type": "x"}}
+{"type": "event_msg", "payload": {"type": "agent_message", "message": "Added an index; 10x faster."}, "timestamp": "2026-07-11T09:05:20Z"}

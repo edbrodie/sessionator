@@ -1,0 +1,2 @@
+{"type": "user", "message": {"role": "user", "content": "does the build cache survive a restart?"}, "timestamp": "2026-07-11T09:35:00Z"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Yes \u2014 it is keyed on the lockfile hash."}], "model": "claude-fable-5"}, "timestamp": "2026-07-11T09:35:05Z"}

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+[project]
+name = "sessionator"
+version = "0.1.0"
+description = "Unified, searchable, local-only history of your Claude Code and Codex sessions — find past work, see how it ended, resume it."
+readme = "README.md"
+# tomllib (stdlib TOML reader) is 3.11+.
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ed Brodie" }]
+keywords = [
+    "claude-code",
+    "codex",
+    "sessions",
+    "history",
+    "search",
+    "cli",
+    "local-first",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Utilities",
+]
+# Hard project constraint: zero runtime dependencies (stdlib only).
+dependencies = []
+
+[project.scripts]
+sessionator = "sessionator.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+# Anchor pytest's config here so it does not walk up into the parent
+# workspace's pyproject.toml (which carries unrelated coverage options).
+testpaths = ["tests"]
+

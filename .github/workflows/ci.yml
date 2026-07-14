@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Version smoke
+        run: |
+          uv run sessionator --version | grep -q sessionator
+
+      - name: Run tests
+        run: uv run pytest
+
+      - name: Fixture-store end-to-end
+        # Ingest the synthetic e2e corpus with the real binary, then exercise
+        # search / show / resume and assert both the output and the grep exit
+        # codes (0 hit · 1 miss · 2 error). Env vars point config/data at a temp
+        # dir and the sources at the committed fixture homes. PATH is untouched
+        # so `--no-backfill` (not a missing CLI) is what prevents any summarizer.
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          export XDG_CONFIG_HOME="$work/config"
+          export XDG_DATA_HOME="$work/data"
+          export CLAUDE_CONFIG_DIR="$GITHUB_WORKSPACE/tests/fixtures/e2e/claude-home"
+          export CODEX_HOME="$GITHUB_WORKSPACE/tests/fixtures/e2e/codex-home"
+
+          echo "· ingest"
+          uv run sessionator ingest --no-backfill | tee "$work/ingest.txt"
+          grep -q "extracted 3 sessions" "$work/ingest.txt"
+          grep -q "claude: 2, codex: 1" "$work/ingest.txt"
+
+          echo "· search hit → exit 0"
+          out="$(uv run sessionator parser --no-reconcile)"
+          echo "$out" | grep -q "codex/019fc0de"
+
+          echo "· search miss → exit 1"
+          rc=0; uv run sessionator nonexistent-zzz --no-reconcile >/dev/null || rc=$?
+          test "$rc" -eq 1
+
+          echo "· resume → exact one line"
+          got="$(uv run sessionator resume codex/019fc0de --no-reconcile)"
+          test "$got" = "cd /home/ed/api && codex resume 019fc0de-0003-7000-8000-000000000003"
+
+          echo "· ambiguous show → exit 2"
+          rc=0; uv run sessionator show claude/c1a0d00 --no-reconcile >/dev/null 2>&1 || rc=$?
+          test "$rc" -eq 2
+
+          echo "e2e OK"

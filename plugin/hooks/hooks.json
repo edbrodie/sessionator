@@ -1,0 +1,17 @@
+{
+  "description": "SessionEnd hook that records each finished Claude Code session into the local sessionator history. Fast and non-blocking: it kicks a detached ingest and returns immediately, and is a silent no-op when the sessionator CLI is not installed. Never touches Codex or ~/.codex configuration.",
+  "hooks": {
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-end-ingest.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

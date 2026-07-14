@@ -1,0 +1,3 @@
+{"type": "user", "message": {"role": "user", "content": "investigate the flaky auth test"}, "timestamp": "2026-07-11T09:00:00Z", "cwd": "/home/u/proj"}
+{ this is not valid json
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Looked into it \u2014 the fixture was racy."}], "model": "claude-fable-5"}, "timestamp": "2026-07-11T09:00:05Z"}

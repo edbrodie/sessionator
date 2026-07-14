@@ -1,0 +1,5 @@
+{"type": "session_meta", "payload": {"id": "019f7001-0000-7000-8000-000000000001", "session_id": "shared-000", "originator": "codex-tui", "thread_source": "user", "cli_version": "0.144.4", "forked_from_id": null, "cwd": "/home/u/proj"}}
+{"type": "turn_context", "payload": {"model": "gpt-5.6-luna"}}
+{"type": "event_msg", "payload": {"type": "user_message", "message": "trace the null-pointer in the loader"}, "timestamp": "2026-07-11T09:00:01Z"}
+}{ not json at all
+{"type": "event_msg", "payload": {"type": "agent_message", "message": "Found it \u2014 a missing guard."}, "timestamp": "2026-07-11T09:00:20Z"}

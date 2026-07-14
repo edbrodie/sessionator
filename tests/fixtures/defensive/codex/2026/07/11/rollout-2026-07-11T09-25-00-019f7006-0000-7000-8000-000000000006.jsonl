@@ -1,0 +1,3 @@
+{"type": "session_meta", "payload": {"id": "019f7006-0000-7000-8000-000000000006", "session_id": "shared-000", "originator": "codex-tui", "thread_source": "user", "cli_version": "0.144.4", "forked_from_id": null, "cwd": "/home/u/proj"}}
+{"type": "event_msg", "payload": {"type": "user_message", "message": "is the cache warm?"}, "timestamp": "2026-07-11T09:25:01Z"}
+{"type": "event_msg", "payload": {"type": "agent_message", "message": "Yes, warmed on boot."}, "timestamp": "2026-07-11T09:25:20Z"}

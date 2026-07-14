@@ -1,0 +1,6 @@
+{"type": "session_meta", "payload": {"id": "019fc0de-0003-7000-8000-000000000003", "session_id": "shared-thread-e2e", "originator": "codex-tui", "thread_source": "user", "cli_version": "0.144.4", "forked_from_id": "019f0000-0003-7000-8000-0000000000aa", "cwd": "/home/ed/api"}}
+{"type": "turn_context", "payload": {"model": "gpt-5.6-luna"}}
+{"type": "event_msg", "payload": {"type": "user_message", "message": "Refactor the parser. Token <private>tok-fake-e2e-003</private> stays out of logs."}, "timestamp": "2020-02-10T12:00:01Z"}
+{"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "c1", "arguments": "{\"cmd\": \"git push origin main\"}"}}
+{"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1", "output": "[main cd67890] refactor parser\n https://github.com/acme/proj/pull/43"}}
+{"type": "event_msg", "payload": {"type": "agent_message", "message": "All done \u2014 parser refactored, committed and pushed."}, "timestamp": "2020-02-10T12:00:20Z"}

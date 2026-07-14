@@ -1,0 +1,4 @@
+{"type": "session_meta", "payload": {"id": "019f7003-0000-7000-8000-000000000003", "session_id": "shared-thread-fork", "originator": "codex-tui", "thread_source": "user", "cli_version": "0.144.4", "forked_from_id": "019f0000-0000-7000-8000-0000000000ff", "cwd": "/home/u/proj"}}
+{"type": "turn_context", "payload": {"model": "gpt-5.6-luna"}}
+{"type": "event_msg", "payload": {"type": "user_message", "message": "continue the forked exploration"}, "timestamp": "2026-07-11T09:10:01Z"}
+{"type": "event_msg", "payload": {"type": "agent_message", "message": "Continuing from the fork point."}, "timestamp": "2026-07-11T09:10:20Z"}

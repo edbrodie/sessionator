@@ -1,0 +1,6 @@
+{"type": "summary", "summary": "Prior context", "leafUuid": "x-0001"}
+{"type": "file-history-snapshot", "snapshot": {"trackedFileBackups": {}}}
+{"type": "user", "message": {"role": "user", "content": "add the new endpoint"}, "timestamp": "2026-07-11T09:10:00Z", "cwd": "/home/u/proj"}
+{"type": "system", "subtype": "post_tool_hook", "content": "hook fired"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Endpoint added."}], "model": "claude-fable-5"}, "timestamp": "2026-07-11T09:10:05Z"}
+{"type": "x-future-type-we-have-never-seen", "whatever": [1, 2, 3]}

@@ -1,0 +1,3 @@
+{"type": "summary", "summary": "Context automatically compacted at the PreCompact boundary.", "leafUuid": "compact-root-0008"}
+{"type": "user", "message": {"role": "user", "content": "continue where we left off on the migration"}, "timestamp": "2026-07-11T09:50:00Z", "cwd": "/home/u/proj"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Resuming the migration work."}], "model": "claude-fable-5"}, "timestamp": "2026-07-11T09:50:05Z"}

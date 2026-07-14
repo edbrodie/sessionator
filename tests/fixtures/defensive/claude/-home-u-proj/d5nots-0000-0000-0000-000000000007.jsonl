@@ -1,0 +1,2 @@
+{"type": "user", "message": {"role": "user", "content": "quick question about the parser"}, "cwd": "/home/u/proj"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Sure \u2014 ask away."}], "model": "claude-fable-5"}}

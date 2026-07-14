@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-07-10T10:00:00Z","cwd":"/home/u/proj","isSidechain":true,"message":{"role":"user","content":"You are a subagent. Do the thing."}}
+{"type":"assistant","timestamp":"2026-07-10T10:00:03Z","isSidechain":true,"message":{"role":"assistant","model":"claude-fable-5","content":[{"type":"text","text":"Done, boss."}]}}

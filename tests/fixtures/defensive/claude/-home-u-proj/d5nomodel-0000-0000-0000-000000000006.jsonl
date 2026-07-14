@@ -1,0 +1,2 @@
+{"type": "user", "message": {"role": "user", "content": "what does this regex do?"}, "timestamp": "2026-07-11T09:40:00Z", "cwd": "/home/u/proj"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "It matches commit trailers."}]}, "timestamp": "2026-07-11T09:40:05Z"}

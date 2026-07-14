@@ -1,0 +1,2 @@
+{"type": "user", "message": {"role": "user", "content": "@@S1@@\n- **Asked:** summarize this session\nProduce five bullets."}, "timestamp": "2026-07-11T09:20:00Z", "cwd": "/home/u/proj"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "- **Asked:** ...\n- **Next steps:** None"}], "model": "claude-fable-5"}, "timestamp": "2026-07-11T09:20:05Z"}

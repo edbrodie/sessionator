@@ -1,0 +1,4 @@
+{"type": "session_meta", "payload": {"id": "019f7007-0000-7000-8000-000000000007", "session_id": "shared-000", "originator": "codex-tui", "thread_source": "user", "cli_version": "0.144.4", "forked_from_id": null}}
+{"type": "turn_context", "payload": {"model": "gpt-5.6-luna"}}
+{"type": "event_msg", "payload": {"type": "user_message", "message": "explain the scheduler"}, "timestamp": "2026-07-11T09:30:01Z"}
+{"type": "event_msg", "payload": {"type": "agent_message", "message": "It is a min-heap by next-run time."}, "timestamp": "2026-07-11T09:30:20Z"}
