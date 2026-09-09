@@ -1,13 +1,12 @@
 ---
 name: resume
 description: Resolves a session from the user's local sessionator history and hands back the exact command that re-opens it. This skill should be used when the user invokes /sessionator:resume, or asks to resume a past session, reopen a session by its id or prefix, or pick up where they left off on some earlier piece of work.
-argument-hint: "<sid-prefix or search terms>"
-allowed-tools: Bash(sessionator:*)
 ---
 
 # /sessionator:resume
 
-Turn `$ARGUMENTS` into one re-open command for a past session.
+Use the invocation arguments, or the user’s request, to find one past session.
+Run commands with the host’s shell tool and quote arguments as data.
 
 ## Classify the argument first
 
@@ -58,4 +57,4 @@ offer `uvx --from git+https://github.com/edbrodie/sessionator sessionator status
 Never install it unprompted.
 
 Full CLI details are in
-`${CLAUDE_PLUGIN_ROOT}/skills/sessionator/references/cli-reference.md`.
+[CLI reference](../sessionator/references/cli-reference.md).

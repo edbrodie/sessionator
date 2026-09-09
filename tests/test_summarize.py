@@ -284,3 +284,24 @@ def test_prompt_travels_on_stdin_not_argv(monkeypatch):
     for args, stdin_text in seen:
         assert secret not in " ".join(args)
         assert stdin_text == secret
+
+
+def test_codex_summary_retries_work_without_git_and_do_not_persist(tmp_path, monkeypatch):
+    import subprocess
+    cfg = make_config(tmp_path)
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 1, stdout='')
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(subprocess, 'run', run)
+    assert summarize._invoke_codex(cfg, '/fake/codex', 'private excerpt') is None
+    assert len(calls) == 3
+    for args, kwargs in calls:
+        assert '--skip-git-repo-check' in args
+        assert '--ephemeral' in args
+        assert args[args.index('--sandbox') + 1] == 'read-only'
+        assert kwargs['input'] == 'private excerpt'
+        assert 'private excerpt' not in args

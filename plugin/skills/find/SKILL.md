@@ -1,8 +1,6 @@
 ---
 name: find
 description: Runs a filtered search over the user's local sessionator history of past Claude Code and Codex sessions. This skill should be used when the user invokes /sessionator:find, or asks to find, list, or filter past sessions by terms, repository, working directory, date range, harness, model, or whether the work was left open.
-argument-hint: "<terms> [--repo X] [--cwd X] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--harness claude|codex] [--model X] [--resolved open|done] [--format compact|full]"
-allowed-tools: Bash(sessionator:*)
 ---
 
 # /sessionator:find
@@ -11,7 +9,8 @@ Search the local session index and relay the hits.
 
 ## Run it
 
-Pass `$ARGUMENTS` through verbatim:
+Use the invocation arguments (or the user’s request when the host does not
+provide `$ARGUMENTS`). Quote each shell argument as data:
 
 ```
 sessionator search $ARGUMENTS
@@ -52,4 +51,4 @@ Offer `sessionator show SID-PREFIX` for a full record and
 user to run; do not execute it.
 
 Flag tables, output shapes, and the exit-code contract live in
-`${CLAUDE_PLUGIN_ROOT}/skills/sessionator/references/cli-reference.md`.
+[CLI reference](../sessionator/references/cli-reference.md).

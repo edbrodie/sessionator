@@ -376,10 +376,14 @@ def _invoke_codex(config, cli_path, prompt) -> str | None:
     settings = config.summarize.get("codex", {})
     model = settings.get("model") or DEFAULT_SUMMARIZE["codex"]["model"]
     reasoning = settings.get("reasoning") or DEFAULT_SUMMARIZE["codex"]["reasoning"]
+    # Summary input is supplied on stdin; no repository or persisted rollout is
+    # needed. Keep these flags on every retry, including the default-model one.
+    base = [cli_path, "exec", "--skip-git-repo-check", "--ephemeral",
+            "--sandbox", "read-only"]
     attempts = [
-        [cli_path, "exec", "-m", model, "-c", f"model_reasoning_effort={reasoning}"],
-        [cli_path, "exec", "-m", model],
-        [cli_path, "exec"],
+        [*base, "-m", model, "-c", f"model_reasoning_effort={reasoning}"],
+        [*base, "-m", model],
+        base,
     ]
     for args in attempts:
         # Prompt on stdin (codex exec reads it when no positional prompt is

@@ -1,6 +1,6 @@
 """`sessionator setup codex` — install the Codex hooks that drive capture.
 
-Codex has no plugin system, so its hooks are a file the user owns:
+Codex capture is installed separately from the shared skills plugin, in:
 ``$CODEX_HOME/hooks.json`` (default ``~/.codex/hooks.json``). This module writes
 exactly two handlers into it and nothing else:
 
@@ -37,6 +37,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,8 +54,8 @@ PRE_COMPACT_TIMEOUT = 600
 _CONFIG_HOOK_TABLE_RX = re.compile(r"^\s*\[\[hooks\.")
 
 TRUST_INSTRUCTIONS = (
-    "Next: run /hooks inside Codex and trust the new entries — Codex will not\n"
-    "execute a hook it has not been shown.\n"
+    "Next: run /hooks in the Codex CLI and trust the new or changed entries.\n"
+    "Trust covers the exact hook definition; changed handlers need review.\n"
     "Trust is positional (<file>:<event>:<group>:<hook>), so reordering the\n"
     "groups in hooks.json by hand invalidates it and you will be asked again."
 )
@@ -121,7 +122,19 @@ def resolve_cli() -> str:
 
 
 def hook_command(cli_path: str) -> str:
-    return f"{cli_path} ingest --hook"
+    return f"{shlex.quote(cli_path)} ingest --hook"
+
+
+def _owns_command(value, command: str) -> bool:
+    """Also recognise the exact unquoted command emitted before path quoting.
+
+    This narrowly migrates our old broken handler without leaving a duplicate.
+    Custom commands remain foreign.
+    """
+    if value == command:
+        return True
+    parts = shlex.split(command)
+    return len(parts) == 3 and value == f"{parts[0]} ingest --hook"
 
 
 def desired_handlers(command: str) -> dict:
@@ -208,7 +221,7 @@ def find_ours(data: dict, command: str) -> dict:
         hits = [
             (gi, hi)
             for gi, hi, handler in _iter_handlers(groups)
-            if handler.get("command") == command
+            if _owns_command(handler.get("command"), command)
         ]
         if hits:
             out[event] = hits
@@ -238,7 +251,7 @@ def merge(existing: dict | None, command: str) -> MergeResult:
         owned = [
             (gi, hi)
             for gi, hi, h in _iter_handlers(groups)
-            if h.get("command") == command
+            if _owns_command(h.get("command"), command)
         ]
         if owned:
             # Rewrite in place: the trust hash is positional, so moving our
@@ -273,7 +286,7 @@ def unmerge(existing: dict, command: str) -> MergeResult:
         owned = [
             (gi, hi)
             for gi, hi, h in _iter_handlers(groups)
-            if h.get("command") == command
+            if _owns_command(h.get("command"), command)
         ]
         for gi, hi in reversed(owned):
             del groups[gi]["hooks"][hi]
@@ -348,7 +361,11 @@ def find_claude_hooks(home: Path | None = None) -> list[Path]:
     """
     root = home or (Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude"))
     hits = []
-    for pattern in (_CLAUDE_SETTINGS_GLOB, _CLAUDE_PLUGIN_GLOB_FLAT, _CLAUDE_PLUGIN_GLOB):
+    for pattern in (
+        _CLAUDE_SETTINGS_GLOB, _CLAUDE_PLUGIN_GLOB_FLAT, _CLAUDE_PLUGIN_GLOB,
+        "plugins/*/claude-hooks/hooks.json", "plugins/*/*/claude-hooks/hooks.json",
+        "plugins/cache/*/*/*/claude-hooks/hooks.json",
+    ):
         try:
             candidates = sorted(root.glob(pattern))
         except OSError:

@@ -4,9 +4,11 @@ A unified, searchable history of your Claude Code and Codex sessions — one loc
 store you can grep by date, project, topic, files touched, or model, that hands
 back a ready-to-run command to resume any session where you left off.
 
-**Local, private, zero network calls, no telemetry — [enforced by a CI test](tests/test_no_network.py).**
-Everything runs and stays on your machine. sessionator reads only your own
-transcript files and never phones home.
+**Local index, optional provider-generated summaries, no telemetry.**
+Capture and search use local transcript files. Summaries send redacted excerpts
+to Anthropic or OpenAI through your configured CLI. The
+[static checks](tests/test_no_network.py) cover package imports and subprocess
+entry points; they do not prove that those CLIs make no network requests.
 
 ## Install and run
 
@@ -108,27 +110,30 @@ break your session is worse than one that misses a session. The worker does the
 real work out of band: ingest that one transcript, cut a summary segment labelled
 with the event, summarize it.
 
-Codex has no plugin system, so its hooks are a file you own:
+The shared plugin supplies skills to Claude Code and Codex/ChatGPT local work.
+Codex capture has one installation path, separate from the plugin:
 
 ```console
 $ sessionator setup codex --dry-run   # show the exact change
 $ sessionator setup codex             # merge it into ~/.codex/hooks.json
 ```
 
-Then run `/hooks` inside Codex to trust the new entries. The merge only ever adds
+Then run `/hooks` in the Codex CLI to trust the new or changed entries. The merge only ever adds
 or rewrites its own two handlers, appends new groups at the end so no existing
-hook's positional trust hash moves, and never reads or writes `config.toml` —
+hook's position moves, and never reads or writes `config.toml` —
 where your own hooks live. `sessionator setup codex --remove` takes them back
-out. `SessionEnd` on Codex fires on archive, delete, close, **and 30 minutes of
-idle**, which is what gets long-lived Codex threads into the index at all.
+out. Changed hook definitions require fresh trust. `SessionEnd` runs when an
+open conversation is archived or deleted, Codex closes normally, or a task has
+been idle and closed in every connected client for 30 minutes. Leaving a task
+open and idle does not trigger capture; the next query reconciles its transcript.
+See [OpenAI’s hook documentation](https://learn.chatgpt.com/docs/hooks).
 
 Nothing runs as a daemon and nothing is scheduled; `sessionator ingest` is still
 just a command you can run yourself, and every query reconciles anyway.
 
 **Reconcile.** Every query first runs a fast, non-blocking reconcile that scans
 your transcript directories, writes a deterministic record for anything new or
-changed, and never waits on summaries — so a search always reflects the session
-you just finished.
+changed, and never waits on summaries — so available local transcripts can be searched before their summaries finish.
 
 **Store + index.** The truth is a plain append-friendly `store.jsonl` under
 `$XDG_DATA_HOME/sessionator` (`~/.local/share/sessionator`); search runs over a
@@ -147,8 +152,7 @@ trail behind it. A session no hook ever saw still gets one whole-transcript
 summary, and a Codex rollout's own `compacted` markers are replayed as segment
 boundaries.
 
-The call shells out to whichever agent CLI you already have, using your existing
-**subscription login**, not an API key. The default is **Haiku** via `claude -p
+The call shells out to whichever agent CLI you already have, using that CLI’s configured authentication. The default is **Haiku** via `claude -p
 --model haiku` for *both* harnesses: summaries are small, frequent and
 per-segment, so the cheapest capable model is the right one. `codex exec` is the
 fallback when `claude` is not installed. Change the preference with
@@ -165,6 +169,25 @@ summary stays pending and fills in the next time a CLI is around.
   dependencies — the CLI is standard library only.
 - **Optional:** the `claude` and/or `codex` CLIs on your PATH, for summary
   generation. Everything else works without them.
+
+## Codex and ChatGPT local work
+
+The same `plugin/skills` files are exposed by `plugin/.codex-plugin/plugin.json`.
+Register the `plugin/` directory in a local Codex marketplace, install Sessionator,
+and start a new task to pick up its skills. Use the built-in plugin-creator to
+register the existing directory; there is no second copy of the skills or CLI.
+See [OpenAI’s plugin setup](https://learn.chatgpt.com/docs/build-plugins).
+
+Install the CLI, then run `sessionator setup codex` once for capture. Installing
+the skills plugin does not add a second set of Codex hooks. Claude’s hook file
+is explicitly registered by its own manifest outside Codex’s default discovery
+path.
+
+These integrations require local shell access and locally persisted Codex
+rollouts. They do not import ordinary ChatGPT chats or cloud-only history.
+Rollout parsing is best-effort: OpenAI does not promise a stable transcript
+format. `sessionator resume` prints a CLI command; it does not navigate the app.
+Codex summaries use `--ephemeral` and can run outside a Git repository.
 
 ## Claude Code plugin
 
@@ -192,9 +215,10 @@ behavior and uninstall steps.
 sessionator is built to keep sensitive work out of the store, and to let you pull
 it back out if it slips in.
 
-- **Zero network.** The package imports nothing that can open a socket and shells
-  out only to an approved, runtime-resolved CLI path — both asserted statically by
-  [`tests/test_no_network.py`](tests/test_no_network.py) on every CI run.
+- **Model processing.** Summaries send redacted excerpts to the provider behind
+  the configured CLI. Haiku through Claude is the default for both histories;
+  Codex is used when Claude is unavailable. Capture and search have no direct
+  network client or telemetry. Static tests check those package boundaries.
 - **Directory exclusions.** Add `cwd_globs` to the `[exclusions]` block in your
   config to keep whole trees out of the index — for example a local-only notes
   vault. Excluded sessions are purged retroactively when you add the glob, and any
@@ -211,9 +235,8 @@ it back out if it slips in.
 
 ## FAQ
 
-**Does it phone home or send telemetry?** No. Zero network calls, no analytics, no
-update checks — and it's a test, not a promise: see
-[`tests/test_no_network.py`](tests/test_no_network.py).
+**Does it send data off the machine?** Summary generation sends excerpts through
+your Claude or Codex CLI. There are no analytics or update checks.
 
 **What about my private notes / vault?** Exclude the directory with a `cwd_globs`
 entry (retroactively purged), wrap sensitive spans in `<private>…</private>`, or
@@ -225,12 +248,12 @@ searches both harnesses' sessions regardless; a session is summarized by whichev
 CLI you have, falling back to the other. With neither installed, summaries stay
 pending and everything else works.
 
-**Do I need an API key?** No. Summary generation uses your existing Claude/Codex
-subscription login via the local CLI.
+**Do I need an API key?** No additional key is required when your CLI is already
+authenticated through a subscription. Codex uses its configured authentication.
 
 **Does it modify my transcripts?** Never. sessionator only reads your harness
-transcript files. It writes exclusively to its own store under
-`$XDG_DATA_HOME/sessionator`.
+transcript files. It writes its store under `$XDG_DATA_HOME/sessionator`, its configuration under
+`$XDG_CONFIG_HOME/sessionator`, and Codex hooks only when you run `setup codex`.
 
 ## Breaking and migration notes
 

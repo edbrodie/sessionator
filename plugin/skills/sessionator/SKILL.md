@@ -11,9 +11,10 @@ each carrying its date, cwd, repo, branch, a five-field summary
 (Asked / Learned / Completed / Left off / Next steps), the files it touched,
 commits, PRs, keywords, skills, model, and a pointer to the raw transcript.
 
-Everything runs and stays on the user's machine. Ingestion is reconciled before
-every query, so a search always reflects the session that just ended. There is
-no freshness caveat to warn about.
+The index is local. Summaries send excerpts to the configured model provider
+through its CLI (Haiku by default, Codex when Claude is unavailable). Queries
+reconcile available local transcripts; missing sources and pending summaries
+remain possible. Use the host’s shell tool to run the CLI.
 
 Do not reason about transcripts yourself. Parse the ask into flags, run the CLI,
 present the hits. The tool is deterministic. Treat it as the source of truth
@@ -118,8 +119,7 @@ Retrieve the exact invocation instead of reconstructing it:
 
 Summaries are generated automatically by the capture hooks. Run
 `sessionator summarize FULL-SID` only when the user explicitly asks for a fresh
-or missing summary; it spends a local Haiku call through the installed `claude`
-CLI. Never run `sessionator forget` unless the user asks for deletion in so many
+or missing summary; it makes a model call through the configured CLI. Never run `sessionator forget` unless the user asks for deletion in so many
 words, and confirm the target first: it writes tombstones that survive
 re-ingest.
 
@@ -127,4 +127,4 @@ re-ingest.
 
 For the full flag tables, exit-code contract, output shapes, segment and summary
 states, and the `setup codex` flow, consult
-`${CLAUDE_PLUGIN_ROOT}/skills/sessionator/references/cli-reference.md`.
+[CLI reference](references/cli-reference.md).

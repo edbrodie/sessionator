@@ -1,12 +1,12 @@
-# sessionator: Claude Code plugin
+# sessionator: shared Claude Code and Codex skills
 
-The Claude Code wrapper around the
+The shared skills wrapper around the
 [`sessionator`](https://github.com/edbrodie/sessionator) CLI: three skills for
 searching and resuming your past sessions from inside a conversation, plus
 capture hooks that keep the local history current automatically.
 
 This plugin is a thin wrapper. All the work (indexing, search, summarization)
-lives in the `sessionator` CLI and stays on your machine. The plugin shells out
+lives in the `sessionator` CLI. The index stays local; summaries use the configured provider. The plugin shells out
 to it.
 
 ## Prerequisites
@@ -66,7 +66,7 @@ because resuming replaces the current session.
 
 ## What the hooks do
 
-Two hooks, both pointing at `hooks/scripts/ingest-hook.sh`:
+Two hooks, both pointing at `claude-hooks/scripts/ingest-hook.sh`:
 
 - **PreCompact** (asynchronous, 600 s budget): before context is compacted, cut
   an incremental summary segment so the pre-compaction work is not lost.
@@ -95,18 +95,19 @@ scheduled.
 
 ### Codex
 
-This plugin installs nothing Codex-side. It writes no Codex hooks and does not
-read or write `~/.codex` configuration.
+The Codex manifest exposes the same skills as the Claude manifest. Register
+this directory in a local Codex marketplace and install it in Codex/ChatGPT
+local work. The plugin adds no Codex hooks; capture uses the CLI setup below,
+so installing the plugin alongside existing capture does not duplicate hooks.
 
 The CLI reads `~/.codex/sessions` and `~/.codex/archived_sessions` when it
 ingests, exactly as it always has, so Codex sessions appear in search without
 any hook at all. Live Codex capture (compaction-time and session-end segments)
 is opt-in and separate: run `sessionator setup codex`, then trust the entries
-with Codex's own `/hooks` command. `sessionator setup codex --remove` unmerges
+with `/hooks` in the Codex CLI. `sessionator setup codex --remove` unmerges
 them and leaves `config.toml` untouched.
 
-For the full local-only privacy pledge (no telemetry, no phone-home, reads only
-your own transcripts, CI-enforced) see the
+For provider processing, local storage, and exclusions, see the
 [main repository README](https://github.com/edbrodie/sessionator#privacy).
 
 ## Opting out per project

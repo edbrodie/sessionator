@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/ingest-hook.sh",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/claude-hooks/scripts/ingest-hook.sh\"",
             "async": true,
             "timeout": 600
           }
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/ingest-hook.sh",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/claude-hooks/scripts/ingest-hook.sh\"",
             "timeout": 10
           }
         ]

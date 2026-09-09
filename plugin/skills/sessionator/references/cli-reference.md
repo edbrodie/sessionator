@@ -109,8 +109,8 @@ detached summary backfill.
 `ingest --hook` is the hook entry point. It reads the hook payload from stdin,
 spools it, detaches a worker, and exits. The worker ingests only that
 transcript, cuts a summary segment at the current position, and folds the new
-segment into the running summary with one Haiku call through the local `claude`
-CLI. Segment events: `precompact`, `postcompact`, `session_end`, `stop`,
+segment into the running summary through the configured CLI: Haiku by default,
+Codex when Claude is unavailable. Excerpts are sent to that provider. Segment events: `precompact`, `postcompact`, `session_end`, `stop`,
 `backfill`, `change`, `manual`.
 
 Summary states: `pending` (queued), `stale` (transcript grew since the last
@@ -138,4 +138,7 @@ an explicit request.
 Writes a `SessionEnd` and an async `PreCompact` entry into `~/.codex/hooks.json`
 pointing at the absolute `sessionator ingest --hook`. Never touches
 `config.toml`. `--dry-run` prints the merge without writing; `--remove` unmerges.
-Codex requires the hooks to be trusted via its `/hooks` command before they run.
+Review new or changed hooks with `/hooks` in the Codex CLI before they run.
+The shared skills plugin does not install Codex hooks, so setup is the only
+Codex capture installation path. Open, idle tasks do not emit `SessionEnd`;
+queries reconcile locally available transcripts.

@@ -420,3 +420,22 @@ def test_status_survives_a_corrupt_codex_hooks_file(codex_env, hooks_file, capsy
 
 def test_setup_rejects_an_unknown_target(codex_env, capsys):
     assert cli.main(["setup", "wat"]) == 2
+
+
+def test_quoted_hook_executes_and_migrates_without_duplicates(tmp_path):
+    import subprocess
+    executable = tmp_path / "folder with spaces" / "sessionator"
+    executable.parent.mkdir()
+    executable.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    executable.chmod(0o755)
+    command = sh.hook_command(str(executable))
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ['ingest', '--hook']
+    legacy = f'{executable} ingest --hook'
+    old = sh.merge(None, legacy).data
+    updated = sh.merge(old, command).data
+    assert len(sh.find_ours(updated, command)['SessionEnd']) == 1
+    assert sh.merge(updated, command).changed is False
+    assert sh.is_empty(sh.unmerge(updated, command).data)
+    assert sh.is_empty(sh.unmerge(old, command).data)

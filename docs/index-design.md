@@ -159,7 +159,8 @@ Schema v2 adds `[summarize].prefer` and moves the Claude default to `haiku`. A v
 file still carrying the old shipped default (`opus-4.8`) is migrated on load and
 rewritten; a model the user chose is left alone.
 
-`sessionator setup codex` writes `$CODEX_HOME/hooks.json` and is the only thing in
-the codebase that writes outside the data dir. It merges by exact command string,
-rewrites its own handlers in place, appends new groups last (Codex trust is
-hashed positionally), and never touches `config.toml`.
+`sessionator setup codex` writes `$CODEX_HOME/hooks.json` separately from the skills plugin. It merges by command identity (including the
+legacy unquoted form), rewrites its own handlers in place, appends new groups
+last, and never touches Codex `config.toml`. New or changed definitions require
+hook trust review. Claude capture is registered explicitly from
+`plugin/claude-hooks/hooks.json`; Codex does not auto-discover that file.
