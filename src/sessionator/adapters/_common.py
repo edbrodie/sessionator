@@ -83,11 +83,20 @@ TEST_PASS_RX = re.compile(r"(\d+)\s+pass(?:ed|ing|es)?\b", re.IGNORECASE)
 TEST_FAILWORD_RX = re.compile(r"\bFAIL(?:ED)?\b|✗|✘|\bTraceback\b|\bError:", re.IGNORECASE)
 TEST_OKWORD_RX = re.compile(r"\ball tests? pass|\bPASS\b|✓|\bok\b|\bsucce", re.IGNORECASE)
 
-# First genuine human turn signatures of sessionator's OWN summarizer batch
-# calls (self-pollution guard — T-007 rule 3). The new backfill batch prompt
-# opens with the @@S1@@ marker; the two legacy prompt openers are also matched.
+# Sentinel line every sessionator summarizer prompt opens with. The prose
+# openers below are ^-anchored and so never matched the real prompt once its
+# wording drifted; an explicit, unanchored sentinel cannot drift and survives a
+# harness wrapping the prompt in its own preamble. Both prompt builders in
+# summarize.py emit it as their first line.
+SUMMARIZER_SENTINEL = "@@SESSIONATOR-SUMMARIZER@@"
+
+# First genuine human turn signatures of sessionator's OWN summarizer calls
+# (self-pollution guard — T-007 rule 3). The sentinel is matched anywhere in the
+# turn; the batch marker and the legacy prompt openers stay for transcripts
+# recorded before the sentinel existed.
 SUMMARIZER_PROMPT_RX = re.compile(
-    r"^\s*@@S\d+@@"
+    re.escape(SUMMARIZER_SENTINEL)
+    + r"|^\s*@@S\d+@@"
     r"|^\s*(?:You\s+)?refine bullets for\b"
     r"|^\s*You (?:refine|summari[sz]e) \w+ .*session summaries\b"
     r"|^\s*Summari[sz]e this Claude Code session transcript\b",

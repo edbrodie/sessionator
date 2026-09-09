@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 
+from .adapters._common import SUMMARIZER_SENTINEL
 from .config import Config, load as load_config
 from .locking import FileLock, LockBusy
 from .schema import RESOLVED_VALUES, SUMMARY_FIELDS
@@ -149,6 +150,7 @@ def build_prompt(chunk) -> str:
     ``@@S<n>@@`` block and the model echoes the marker before its six labelled
     lines, so the response splits back per session."""
     head = (
+        f"{SUMMARIZER_SENTINEL}\n"
         "You summarize developer coding-agent sessions. Each session is "
         "introduced by a marker line like '@@S1@@'. For EACH session, first echo "
         "its marker line EXACTLY on its own line, then output EXACTLY these six "
