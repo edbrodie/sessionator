@@ -30,7 +30,7 @@ from . import __version__
 # ``convert-legacy`` is a hidden one-time migration verb (absent from help).
 _COMMANDS = (
     "search", "show", "resume", "ingest", "status", "forget", "summarize",
-    "_backfill", "convert-legacy",
+    "_backfill", "_hook_worker", "convert-legacy",
 )
 
 
@@ -45,6 +45,15 @@ def main(argv: list[str] | None = None) -> int:
     if argv[0] in ("-h", "--help"):
         _print_top_help()
         return 0
+
+    # `ingest --hook` is the harness hook entry point and is handled BEFORE
+    # argparse: it must never write to stdout (Claude Code parses a hook's
+    # stdout) and must never exit non-zero (a failing hook is a user-visible
+    # error in the middle of their session). Everything it could complain
+    # about — bad flags, no stdin, an unwritable data dir — is silently a
+    # no-op instead.
+    if argv[0] == "ingest" and "--hook" in argv[1:]:
+        return _hook_ingest()
 
     if argv[0] in _COMMANDS:
         command, rest = argv[0], argv[1:]
@@ -63,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_status(rest)
     if command == "_backfill":
         return _cmd_backfill(rest)
+    if command == "_hook_worker":
+        return _cmd_hook_worker(rest)
     if command == "forget":
         return _cmd_forget(rest)
     if command == "summarize":
@@ -544,6 +555,38 @@ def _cmd_backfill(argv: list[str]) -> int:
         f"errors {stats.get('errors', 0)}"
         + (" (already running)" if stats.get("already_running") else "")
     )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# hook entry points (never print: stdout belongs to the harness protocol)
+# ---------------------------------------------------------------------------
+
+def _hook_ingest() -> int:
+    """``sessionator ingest --hook``: spool stdin, detach a worker, exit 0.
+
+    Called from inside a harness hook, so it is silent and total: no stdout, no
+    stderr, no non-zero exit, whatever goes wrong. The real work happens in the
+    detached ``_hook_worker``."""
+    try:
+        from .hooks import spool_and_detach
+
+        raw = sys.stdin.buffer.read() if sys.stdin is not None else b""
+        spool_and_detach(raw)
+    except Exception:
+        pass
+    return 0
+
+
+def _cmd_hook_worker(argv: list[str]) -> int:
+    """Hidden: consume one spooled hook payload. Detached, output-less, exit 0."""
+    try:
+        from .hooks import run_worker
+
+        if argv:
+            run_worker(argv[0])
+    except Exception:
+        pass
     return 0
 
 

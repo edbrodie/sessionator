@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import segments as seg
-from .adapters import ADAPTERS
+from .adapters import ADAPTERS, adapter_for_path
 from .locking import FileLock, LockBusy
 from .privacy import cwd_excluded, scrub_files, scrub_text
 from .schema import split_sid
@@ -163,7 +163,7 @@ def reconcile_one(
     store = Store(config)
     result = ReconcileResult()
     p = Path(path)
-    adapter = _adapter_for(p, sid)
+    adapter = adapter_for_path(config, p) or _adapter_for_sid(sid)
     if adapter is None:
         return result
 
@@ -193,19 +193,18 @@ def reconcile_one(
     return result
 
 
-def _adapter_for(path: Path, sid: str | None):
-    """The adapter that owns ``path``. The sid's harness prefix wins when the
-    caller knows it; otherwise a Codex rollout is recognized by its filename."""
-    if sid:
-        try:
-            harness = split_sid(sid)[0]
-        except ValueError:
-            harness = None
-        if harness in ADAPTERS:
-            return ADAPTERS[harness]
-    if path.name.startswith("rollout-"):
-        return ADAPTERS.get("codex")
-    return ADAPTERS.get("claude")
+def _adapter_for_sid(sid: str | None):
+    """Fallback resolver for a caller that knows the sid but whose transcript
+    path ``adapter_for_path`` does not recognize (a relocated transcript, a
+    harness laying files out unusually). The path is still authoritative when it
+    is recognizable — the sid only fills the gap."""
+    if not sid:
+        return None
+    try:
+        harness = split_sid(sid)[0]
+    except ValueError:
+        return None
+    return ADAPTERS.get(harness)
 
 
 def _commit(
@@ -378,10 +377,6 @@ def transcript_size(rec) -> int:
         return Path(rec.transcript_path).stat().st_size
     except OSError:
         return 0
-
-    if kick_backfill:
-        kick_detached_backfill(config)
-    return result
 
 
 def kick_detached_backfill(config, only_sid: str | None = None) -> None:
