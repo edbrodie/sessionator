@@ -35,6 +35,9 @@ from . import __version__
 
 # Commands that take an explicit verb. Anything else is implicit search.
 # ``convert-legacy`` is a hidden one-time migration verb (absent from help).
+# How long `summarize` waits for a running background sweep before giving up.
+SUMMARIZE_WAIT_SECONDS = 600.0
+
 _COMMANDS = (
     "search", "show", "resume", "ingest", "status", "forget", "summarize",
     "setup", "_backfill", "_hook_worker", "convert-legacy",
@@ -494,7 +497,16 @@ def _cmd_summarize(argv: list[str]) -> int:
         kick_detached_backfill(cfg, only_sid=sid)
     else:
         try:
-            backfill(cfg, only_sid=sid)
+            # A user is waiting: block on a running sweep rather than yield to
+            # it, or the verb would print "still pending" while a background
+            # backfill happens to hold the lock.
+            stats = backfill(cfg, only_sid=sid, wait=SUMMARIZE_WAIT_SECONDS)
+            if stats.get("already_running"):
+                print(
+                    "summarize: a background backfill is still running; the "
+                    "segment is queued and will be summarized when it finishes",
+                    file=sys.stderr,
+                )
         except Exception as e:  # pragma: no cover - defensive
             print(f"summarize warning: {e}", file=sys.stderr)
 
