@@ -318,7 +318,7 @@ def _cut_segments(store, rec, *, event, trigger) -> None:
       legacy whole-record path (``stale``), which is also what keeps a plain
       ``ingest`` from opening any segment at all.
     """
-    size = _transcript_size(rec)
+    size = transcript_size(rec)
     turns = rec.turn_count or seg.count_turns(rec.excerpt)
     had_segments = bool(rec.summary_segments)
     cut = []
@@ -370,7 +370,7 @@ def _write_segment_sidecar(store, rec, segment) -> None:
         store.write_segment_excerpt(rec, segment["seq"], text)
 
 
-def _transcript_size(rec) -> int:
+def transcript_size(rec) -> int:
     """The transcript's size right now — the growth marker a segment records."""
     if not rec.transcript_path:
         return 0
