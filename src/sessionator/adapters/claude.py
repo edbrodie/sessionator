@@ -152,6 +152,9 @@ def _to_record(uuid, transcript_path, fields) -> Record:
         parse_warnings=fields["parse_warnings"],
     )
     rec.excerpt = fields["excerpt"]
+    rec.excerpt_full = fields["excerpt_full"]
+    rec.turn_count = fields["turn_count"]
+    rec.boundaries = fields["boundaries"]
     return rec
 
 

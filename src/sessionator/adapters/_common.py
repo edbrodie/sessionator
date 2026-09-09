@@ -184,6 +184,7 @@ class Walker:
     def __init__(self):
         self.cwd = None
         self.turns = []          # ordered ("USER"/"ASSISTANT", text)
+        self.boundaries = []     # cut points seen in the transcript itself
         self.n_user = 0
         self.first_ts = None
         self.last_ts = None
@@ -221,6 +222,18 @@ class Walker:
 
     def note_warning(self):
         self.parse_warnings += 1
+
+    def mark_boundary(self, event, trigger=None):
+        """Note a cut point at the current turn ordinal — a compaction marker
+        the transcript carries. For a session no hook ever saw, this is the only
+        record of where its history was dropped, and so of where a summary
+        segment should end. Repeated markers at the same ordinal collapse."""
+        turn = len(self.turns)
+        if turn <= 0:
+            return
+        if self.boundaries and self.boundaries[-1]["turn"] == turn:
+            return
+        self.boundaries.append({"event": event, "trigger": trigger, "turn": turn})
 
     def set_cwd(self, cwd):
         if self.cwd is None and isinstance(cwd, str) and cwd:
@@ -471,8 +484,11 @@ class Walker:
             if m:
                 branch = m.group(1)
 
-        # Excerpt (capped, private already stripped at ingest).
-        excerpt = "\n\n".join(f"{role}: {text}" for role, text in self.turns)
+        # Excerpt (capped, private already stripped at ingest). The untrimmed
+        # text is returned alongside it: a segment sidecar is cut from the real
+        # turns, not from a 36k middle-trim of them.
+        excerpt_full = "\n\n".join(f"{role}: {text}" for role, text in self.turns)
+        excerpt = excerpt_full
         if len(excerpt) > EXCERPT_LIMIT:
             excerpt = excerpt[:24000] + "\n...[trimmed]...\n" + excerpt[-12000:]
 
@@ -530,6 +546,9 @@ class Walker:
             "tests": tests,
             "resolved": resolved,
             "excerpt": excerpt,
+            "excerpt_full": excerpt_full,
+            "turn_count": len(self.turns),
+            "boundaries": list(self.boundaries),
             "parse_warnings": self.parse_warnings,
         }
 

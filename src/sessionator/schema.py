@@ -158,6 +158,11 @@ class Record:
 
     # Transient — never serialized (see to_dict).
     excerpt: str = ""
+    # Transient: the untrimmed excerpt and its turn count, as the adapter just
+    # extracted them. Segment slices are cut from these (the stored ``excerpt``
+    # is middle-trimmed at 36k), and only a fresh extraction has them.
+    excerpt_full: str = ""
+    turn_count: int = 0
     # Transient: cut points the adapter saw in this transcript (compaction
     # markers), as [{event, trigger, turn}]; reconcile turns them into segments.
     boundaries: list = field(default_factory=list)

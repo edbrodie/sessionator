@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from sessionator.adapters import ADAPTERS, claude, codex
@@ -89,3 +90,66 @@ def test_malformed_line_counts_warning(tmp_path, claude_fixtures):
     rec = claude.extract(f, cfg)
     assert rec is not None
     assert rec.parse_warnings == 1
+
+
+def _write_rollout(tmp_path, lines):
+    d = tmp_path / "codex" / "2026" / "07" / "11"
+    d.mkdir(parents=True)
+    uuid = "019f7777-0000-7000-8000-000000000009"
+    meta = {
+        "type": "session_meta",
+        "payload": {
+            "id": uuid,
+            "session_id": "shared-thread-009",
+            "originator": "codex-tui",
+            "thread_source": "user",
+            "cwd": "/home/u/proj",
+        },
+    }
+    p = d / f"rollout-2026-07-11T09-00-00-{uuid}.jsonl"
+    p.write_text("\n".join(json.dumps(x) for x in [meta, *lines]) + "\n")
+    return p
+
+
+def _user(msg, ts="2026-07-11T09:00:01Z"):
+    return {
+        "type": "event_msg",
+        "timestamp": ts,
+        "payload": {"type": "user_message", "message": msg},
+    }
+
+
+def _agent(msg):
+    return {"type": "event_msg", "payload": {"type": "agent_message", "message": msg}}
+
+
+def test_codex_compacted_line_marks_a_boundary(tmp_path):
+    path = _write_rollout(
+        tmp_path,
+        [
+            _user("start the parser work"),
+            _agent("on it"),
+            {"type": "compacted"},
+            {"type": "compacted"},  # collapses: same turn ordinal
+            _user("now finish it"),
+            _agent("done"),
+        ],
+    )
+    cfg = make_config(tmp_path, codex_dir=tmp_path / "codex")
+    rec = codex.extract(path, cfg)
+    assert rec is not None
+    # The cut sits after the two turns that preceded the compaction.
+    assert rec.boundaries == [{"event": "precompact", "trigger": "auto", "turn": 2}]
+    assert rec.turn_count == 4
+    assert rec.excerpt_full and rec.excerpt_full == rec.excerpt
+
+
+def test_walker_boundary_before_any_turn_is_dropped():
+    from sessionator.adapters._common import Walker
+
+    w = Walker()
+    w.mark_boundary("precompact", "auto")  # nothing to cut yet
+    assert w.boundaries == []
+    w.add_user("hello")
+    w.mark_boundary("precompact", "auto")
+    assert w.boundaries == [{"event": "precompact", "trigger": "auto", "turn": 1}]

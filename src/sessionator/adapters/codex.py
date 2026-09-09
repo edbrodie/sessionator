@@ -125,6 +125,9 @@ def extract(path, config) -> Record | None:
         parse_warnings=fields["parse_warnings"],
     )
     rec.excerpt = fields["excerpt"]
+    rec.excerpt_full = fields["excerpt_full"]
+    rec.turn_count = fields["turn_count"]
+    rec.boundaries = fields["boundaries"]
     return rec
 
 
@@ -145,6 +148,13 @@ def _iter_body(f, w):
 def _handle(w: Walker, obj):
     w.tick()
     t = obj.get("type")
+
+    if t == "compacted":
+        # Codex writes this where it dropped history. Handled before the payload
+        # check because the line carries no payload dict of its own.
+        w.mark_boundary("precompact", "auto")
+        return
+
     payload = obj.get("payload")
     if not isinstance(payload, dict):
         return
