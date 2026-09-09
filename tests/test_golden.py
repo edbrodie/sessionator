@@ -59,6 +59,10 @@ def golden_store(tmp_path):
     assert result.by_harness == {"claude": 2, "codex": 1}
     records = Store(cfg).load()
     assert set(records) == {SID_AUTH, SID_PARSER, SID_DASH}
+    # A plain ingest never opens a summary segment: segments are cut by hooks,
+    # by a transcript's own compaction markers, or on explicit request.
+    assert all(r.summary_segments == [] for r in records.values())
+    assert all(r.summary_state == "pending" for r in records.values())
     return cfg, records
 
 
