@@ -1,0 +1,18 @@
+{
+  "name": "sessionator",
+  "owner": {
+    "name": "Ed Brodie"
+  },
+  "description": "Local-only session history for Claude Code and Codex: the sessionator plugin, its skills, and its capture hooks.",
+  "plugins": [
+    {
+      "name": "sessionator",
+      "source": "./plugin",
+      "description": "Unified, searchable, local-only history of your Claude Code and Codex sessions: find past work, see how it ended, resume it.",
+      "version": "0.2.0",
+      "author": {
+        "name": "Ed Brodie"
+      }
+    }
+  ]
+}

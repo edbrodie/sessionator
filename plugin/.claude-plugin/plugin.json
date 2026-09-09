@@ -1,8 +1,10 @@
 {
   "name": "sessionator",
-  "version": "0.1.0",
-  "description": "Unified, searchable, local-only history of your Claude Code and Codex sessions — find past work, see how it ended, resume it.",
+  "version": "0.2.0",
+  "description": "Unified, searchable, local-only history of your Claude Code and Codex sessions: find past work, see how it ended, resume it.",
   "author": { "name": "Ed Brodie" },
   "homepage": "https://github.com/edbrodie/sessionator",
+  "repository": "https://github.com/edbrodie/sessionator",
+  "license": "MIT",
   "keywords": ["claude-code", "codex", "sessions", "history", "search", "resume", "local-first"]
 }
