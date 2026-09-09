@@ -43,7 +43,7 @@ from .adapters import ADAPTERS, adapter_for_path
 from .locking import FileLock, LockBusy
 from .privacy import cwd_excluded, scrub_files, scrub_text
 from .schema import split_sid
-from .store import Store
+from .store import Store, watermark_key
 
 
 @dataclass
@@ -122,11 +122,15 @@ def reconcile(config, *, kick_backfill: bool = True) -> ReconcileResult:
         for root in adapter.discover_sources(config):
             for path, mtime, size in adapter.enumerate_sessions(root):
                 result.scanned += 1
-                key = str(path)
+                key = watermark_key(adapter, path)
                 prev = watermarks.get(key)
-                if prev == [mtime, size]:
-                    continue  # unchanged since last seen
                 new_watermarks[key] = [mtime, size]
+                if isinstance(prev, list) and len(prev) >= 2 and prev[1] == size:
+                    # Size, not (mtime, size): archiving a Codex thread moves the
+                    # rollout, which changes its mtime and its path while the
+                    # bytes stay identical. Transcripts only ever grow, so an
+                    # unchanged size means unchanged content.
+                    continue
                 try:
                     rec = adapter.extract(path, config)
                 except Exception:
@@ -184,7 +188,7 @@ def reconcile_one(
     result.parse_warnings += rec.parse_warnings
 
     watermarks = store.load_watermarks()
-    watermarks[str(p)] = [st.st_mtime, st.st_size]
+    watermarks[watermark_key(adapter, p)] = [st.st_mtime, st.st_size]
     records = _commit(
         config, store, [rec], watermarks, store.load_tombstones(), result,
         event=event, trigger=trigger,

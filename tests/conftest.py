@@ -129,3 +129,8 @@ def codex_fixtures():
 @pytest.fixture
 def codex_headless_fixtures():
     return FIXTURES / "codex_headless"
+
+
+@pytest.fixture
+def codex_desktop_fixtures():
+    return FIXTURES / "codex_desktop"

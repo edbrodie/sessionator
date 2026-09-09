@@ -5,18 +5,28 @@ Implements the four-function adapter contract over ``$CODEX_HOME/sessions``
 ``YYYY/MM/DD/rollout-<ISO-ts>-<uuid>.jsonl``.
 
 Defensive rules (T-007 rule 4): the rollout's ``session_meta.payload`` is
-authoritative. Only interactive TUI top-level threads are ingested — line 1 must
-be a ``session_meta`` with ``originator == "codex-tui"`` and
-``thread_source == "user"``; headless ``codex exec`` and subagent threads are
-skipped. The sid uuid is the rollout's top-level ``id`` (fork-unique), NOT the
-fork-shared ``session_id``; ``forked_from_id`` lineage is captured.
-``history.jsonl`` is never read.
+authoritative. Only interactive top-level threads are ingested — line 1 must be a
+``session_meta`` with ``thread_source == "user"`` and an ``originator`` that is
+not on the machine-driven denylist. The filter is a **denylist, not an
+allowlist**: the desktop app writes ``Codex Desktop``, the TUI writes
+``codex-tui``, and a future client will write something we have never seen, so an
+allowlist silently drops real sessions (it dropped every desktop session until
+this was fixed). Only the originators that mean "no human was driving this" —
+``codex exec``, subagents, MCP, cloud, automation — are rejected. The originator
+is kept on the record as ``client``.
+
+The sid uuid is the rollout's top-level ``id`` (fork-unique), NOT the fork-shared
+``session_id``; ``forked_from_id`` lineage is captured. ``history.jsonl`` is
+never read. Archiving a thread **moves** its rollout from ``sessions/`` to a flat
+``archived_sessions/``, so both dirs are enumerated and the watermark is keyed on
+the rollout uuid rather than its path.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -25,13 +35,38 @@ from ._common import Walker, iter_jsonl
 
 NAME = "codex"
 
+# Originators that mean "not a human at a terminal". Compared after normalizing
+# whitespace/underscores to hyphens and lowercasing, so ``codex_exec``,
+# ``Codex Exec`` and ``codex-exec`` are one entry.
+DENIED_ORIGINATORS = frozenset({
+    "codex-exec",
+    "codex-subagent",
+    "codex-mcp",
+    "codex-cloud",
+    "codex-automation",
+})
+
+# Archiving a thread moves its rollout here — a flat dir of the same rollout
+# files, a sibling of ``sessions/``.
+ARCHIVE_DIRNAME = "archived_sessions"
+
+_NORMALIZE_RX = re.compile(r"[\s_]+")
+
 
 def discover_sources(config) -> list[Path]:
+    """``sessions/`` plus its ``archived_sessions/`` sibling when present.
+
+    Archiving is a move, not a copy: without the second root, archiving a thread
+    in the desktop app would make its session vanish from the index."""
     src = config.sources.get(NAME)
     if not src or not src.enabled or not src.transcript_dir:
         return []
     root = Path(src.transcript_dir)
-    return [root] if root.is_dir() else []
+    roots = [root] if root.is_dir() else []
+    archive = root.parent / ARCHIVE_DIRNAME
+    if archive.is_dir() and archive != root:
+        roots.append(archive)
+    return roots
 
 
 def enumerate_sessions(root: Path):
@@ -49,9 +84,21 @@ def enumerate_sessions(root: Path):
             yield (p, st.st_mtime, st.st_size)
 
 
+def _originator_denied(value) -> bool:
+    """True when this originator means a machine, not a person, drove the thread.
+    An empty/absent originator is rejected too — every real client sets one, so a
+    blank is a malformed or synthetic rollout, not a new client."""
+    if not isinstance(value, str):
+        return True
+    norm = _NORMALIZE_RX.sub("-", value.strip()).lower()
+    if not norm:
+        return True
+    return norm in DENIED_ORIGINATORS
+
+
 def _read_meta(path):
     """Read + validate line 1. Returns the session_meta payload dict for an
-    interactive top-level TUI thread, else None."""
+    interactive top-level thread, else None."""
     try:
         with open(path, "r", errors="replace") as f:
             first = f.readline()
@@ -66,7 +113,9 @@ def _read_meta(path):
     mp = meta.get("payload")
     if not isinstance(mp, dict):
         return None
-    if mp.get("originator") != "codex-tui" or mp.get("thread_source") != "user":
+    if _originator_denied(mp.get("originator")):
+        return None
+    if mp.get("thread_source") != "user":
         return None
     return mp
 
@@ -123,6 +172,7 @@ def extract(path, config) -> Record | None:
         transcript_path=str(path),
         summary_state="pending",
         parse_warnings=fields["parse_warnings"],
+        client=mp.get("originator") or None,
     )
     rec.excerpt = fields["excerpt"]
     rec.excerpt_full = fields["excerpt_full"]
@@ -211,6 +261,16 @@ def _handle_function_call(w: Walker, payload):
                 if isinstance(st, dict)
             ]
             w.set_todos(todos)
+
+
+def watermark_key(path) -> str:
+    """Identity of a rollout for the watermark scan: its uuid, not its path.
+
+    Archiving moves the file, and a path-keyed watermark would read a move as a
+    brand-new transcript and re-extract the whole session. The uuid is stable
+    across the move (and is the sid uuid), so the size check that follows sees
+    an unchanged file and skips it."""
+    return f"{NAME}:{_uuid_from_name(Path(path).name)}"
 
 
 def _uuid_from_name(name):

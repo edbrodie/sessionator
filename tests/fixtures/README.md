@@ -9,7 +9,7 @@ Three groups:
 
 | Group | Dirs | Scanned by | Purpose |
 |-------|------|-----------|---------|
-| Adapter smoke | `claude/`, `codex/`, `codex_headless/` | `test_adapters.py`, `test_reconcile.py` | Happy-path extraction + the two filtered cases; **record counts are pinned** — do not add ingestable sessions here. |
+| Adapter smoke | `claude/`, `codex/`, `codex_headless/`, `codex_desktop/` | `test_adapters.py`, `test_reconcile.py` | Happy-path extraction + the filtered cases; **record counts are pinned** — do not add ingestable sessions to `claude/` or `codex/`, which the reconcile tests scan. |
 | Defensive | `defensive/` | `test_defensive.py` | One fixture per T-007 rule gap. Kept out of the smoke dirs so the reconcile counts stay stable. |
 | E2E / golden | `e2e/` | `test_golden.py`, CI e2e step | Real harness dir layout (`*-home/{projects,sessions}`) with stable far-past dates for deterministic golden output. |
 
@@ -39,7 +39,7 @@ Rules are the ones in `docs/adapter-contract.md` §"Defensive parsing".
 | `…019f7002…` | 2 | Unknown `response_item` / `event_msg` payload types + an unknown top-level type → ignored. |
 | `…019f7003…` | 4 | `forked_from_id` captured; sid keyed on the fork-unique top-level `id`, not the shared `session_id`. |
 | `…019f7004…` | 4 | `thread_source != user` → filtered. |
-| `…019f7005…` | 4 | `originator != codex-tui` (nested subagent) → filtered. |
+| `…019f7005…` | 4 | `originator` on the denylist (`codex-subagent`) → filtered. |
 | `…019f7006…` | 5 | No `turn_context` → `model is None`, record still produced. |
 | `…019f7007…` | 5 | No `cwd` in `session_meta` → `cwd == ""` (no folder fallback for codex). |
 
@@ -51,6 +51,14 @@ read": enumerate yields only the rollout, and the sentinel never reaches a recor
 
 (`codex_headless/` — the headless `codex exec` filter, `originator == codex_exec`
 — lives at the top level and is asserted by `test_adapters.py`.)
+
+### Codex desktop (`codex_desktop/2026/07/12/`)
+
+`…019fd35c….jsonl` has `originator: "Codex Desktop"`, `thread_source: "user"` —
+the ~99% case on a real machine, and the one the old `originator == "codex-tui"`
+allowlist silently dropped. It is scanned only by the tests that name it
+(`test_adapters.py`, and the archive-move tests in `test_reconcile.py`, which
+copy it into a temp `codex-home`), so the pinned counts elsewhere are unaffected.
 
 ## `e2e/` — golden corpus
 

@@ -11,8 +11,12 @@ Layout under the data dir:
   the main excerpt is middle-trimmed at 36k, and the sessions that compact are
   exactly the long ones whose middle would be gone by the time the summarizer
   ran; the sidecar preserves the slice verbatim (capped for the LLM).
-* ``watermarks.json`` — ``{transcript_path: [mtime, size]}`` for the reconcile
-  scan.
+* ``watermarks.json`` — ``{"schema": 2, "entries": {key: [mtime, size]}}`` for
+  the reconcile scan. The key is the adapter's stable identity for a transcript
+  (``codex:<uuid>``, ``claude:<stem>``), not its path: Codex archives a thread by
+  **moving** its rollout, and a path-keyed watermark reads that move as a new
+  transcript and re-extracts the whole session. Schema-1 files (path-keyed, no
+  wrapper) are migrated on load.
 * ``tombstones.json`` — a list of sids that ``forget`` has retired; reconcile
   never re-ingests them.
 * ``scrub_state.json`` — the exclusion globs last applied by a retroactive
@@ -28,8 +32,11 @@ import json
 import os
 from pathlib import Path
 
+from .adapters import adapter_for_path
 from .schema import Record, split_sid
 from .segments import INPUT_CAP, cap_text
+
+WATERMARK_SCHEMA = 2
 
 
 class Store:
@@ -139,10 +146,34 @@ class Store:
 
     # --- watermarks ------------------------------------------------------
     def load_watermarks(self) -> dict:
-        return _load_json(self.watermarks_path, default={})
+        """The ``{key: [mtime, size]}`` entries, migrating a v1 file in passing.
+        Returns the entries alone — the schema wrapper is this module's business,
+        not the reconcile's."""
+        data = _load_json(self.watermarks_path, default={})
+        if not isinstance(data, dict):
+            return {}
+        if data.get("schema") == WATERMARK_SCHEMA:
+            entries = data.get("entries")
+            return entries if isinstance(entries, dict) else {}
+        return self._migrate_watermarks(data)
+
+    def _migrate_watermarks(self, v1: dict) -> dict:
+        """v1 keyed every entry on the transcript path. Re-key each one through
+        the owning adapter so the history survives; a path no adapter recognizes
+        keeps a ``path:`` key, which is exactly what it meant before. Nothing is
+        written here — the next reconcile persists the v2 file."""
+        out = {}
+        for key, value in v1.items():
+            if not isinstance(key, str):
+                continue
+            adapter = adapter_for_path(self.config, key)
+            out[watermark_key(adapter, key)] = value
+        return out
 
     def write_watermarks(self, wm: dict) -> None:
-        _dump_json(self.watermarks_path, wm)
+        _dump_json(
+            self.watermarks_path, {"schema": WATERMARK_SCHEMA, "entries": wm}
+        )
 
     # --- tombstones ------------------------------------------------------
     def load_tombstones(self) -> set[str]:
@@ -167,6 +198,25 @@ class Store:
 
     def write_applied_exclusions(self, globs) -> None:
         _dump_json(self.scrub_state_path, {"exclusions": sorted(set(globs or []))})
+
+
+def watermark_key(adapter, path) -> str:
+    """The watermark key for ``path`` under ``adapter``.
+
+    ``watermark_key`` is the optional fifth adapter function: an adapter that
+    knows a path-independent identity for its transcripts declares it, and gets
+    move-tolerance for free. One that does not falls back to ``path:<path>``,
+    which is the v1 behaviour.
+    """
+    fn = getattr(adapter, "watermark_key", None)
+    if callable(fn):
+        try:
+            key = fn(path)
+        except Exception:
+            key = None
+        if isinstance(key, str) and key:
+            return key
+    return f"path:{path}"
 
 
 def _read_sidecar(path: Path) -> str:

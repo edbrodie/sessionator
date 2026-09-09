@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from sessionator.adapters import ADAPTERS, claude, codex
 from conftest import make_config
 
@@ -153,3 +155,144 @@ def test_walker_boundary_before_any_turn_is_dropped():
     w.add_user("hello")
     w.mark_boundary("precompact", "auto")
     assert w.boundaries == [{"event": "precompact", "trigger": "auto", "turn": 1}]
+
+
+# --- codex client filtering: a denylist, not an allowlist -------------------
+
+DESKTOP_UUID = "019fd35c-0000-7000-8000-00000000000d"
+
+
+def _desktop_session(root):
+    return (
+        root / "2026" / "07" / "12"
+        / f"rollout-2026-07-12T14-00-00-{DESKTOP_UUID}.jsonl"
+    )
+
+
+def test_codex_desktop_session_is_ingested(tmp_path, codex_desktop_fixtures):
+    # The regression this denylist exists for: `Codex Desktop` is ~99% of this
+    # user's Codex sessions and the old `originator == "codex-tui"` allowlist
+    # dropped every one of them.
+    cfg = make_config(tmp_path, codex_dir=codex_desktop_fixtures)
+    rec = codex.extract(_desktop_session(codex_desktop_fixtures), cfg)
+    assert rec is not None
+    assert rec.sid == f"codex/{DESKTOP_UUID}"
+    assert rec.client == "Codex Desktop"
+    assert rec.model == "gpt-5.6-luna"
+    assert any(sha == "7ac9911" for sha, _ in rec.commits)
+
+
+def test_claude_records_carry_their_client(tmp_path, claude_fixtures):
+    cfg = make_config(tmp_path, claude_dir=claude_fixtures)
+    rec = claude.extract(_claude_session(claude_fixtures), cfg)
+    assert rec.client == "claude-code"
+
+
+@pytest.mark.parametrize(
+    "originator,denied",
+    [
+        ("codex-exec", True),
+        ("codex_exec", True),        # normalized: underscores are hyphens
+        ("Codex Exec", True),        # normalized: spaces and case
+        ("codex-subagent", True),
+        ("codex-mcp", True),
+        ("codex-cloud", True),
+        ("codex-automation", True),
+        ("", True),                  # every real client sets one
+        ("   ", True),
+        (None, True),
+        (7, True),
+        ("codex-tui", False),
+        ("Codex Desktop", False),
+        ("codex-vscode-2029", False),  # a client that does not exist yet
+    ],
+)
+def test_originator_denylist(originator, denied):
+    assert codex._originator_denied(originator) is denied
+
+
+def test_unknown_originator_with_user_turns_is_ingested(tmp_path):
+    path = _write_rollout(tmp_path, [_user("hello from the future"), _agent("hi")])
+    text = path.read_text().replace('"codex-tui"', '"codex-neuralink"')
+    path.write_text(text)
+    cfg = make_config(tmp_path, codex_dir=tmp_path / "codex")
+    rec = codex.extract(path, cfg)
+    assert rec is not None and rec.client == "codex-neuralink"
+
+
+def test_subagent_thread_source_still_filtered_whatever_the_client(tmp_path):
+    path = _write_rollout(tmp_path, [_user("nested work"), _agent("ok")])
+    path.write_text(path.read_text().replace('"user"', '"subagent"'))
+    cfg = make_config(tmp_path, codex_dir=tmp_path / "codex")
+    assert codex.extract(path, cfg) is None
+
+
+# --- archived_sessions + watermark identity --------------------------------
+
+def test_discover_sources_includes_the_archive_sibling(tmp_path):
+    home = tmp_path / "codex-home"
+    (home / "sessions" / "2026" / "07" / "12").mkdir(parents=True)
+    archive = home / "archived_sessions"
+    archive.mkdir()
+    cfg = make_config(tmp_path, codex_dir=home / "sessions")
+
+    assert codex.discover_sources(cfg) == [home / "sessions", archive]
+
+    # Absent archive dir: just the one root, no error.
+    archive.rmdir()
+    assert codex.discover_sources(cfg) == [home / "sessions"]
+
+
+def test_archived_rollouts_are_enumerated(tmp_path, codex_desktop_fixtures):
+    import shutil
+
+    home = tmp_path / "codex-home"
+    (home / "sessions").mkdir(parents=True)
+    archive = home / "archived_sessions"
+    archive.mkdir()
+    # Archiving flattens: the dated dirs are not preserved.
+    shutil.copy(_desktop_session(codex_desktop_fixtures), archive)
+
+    cfg = make_config(tmp_path, codex_dir=home / "sessions")
+    found = [
+        p
+        for root in codex.discover_sources(cfg)
+        for p, _m, _s in codex.enumerate_sessions(root)
+    ]
+    assert [p.parent for p in found] == [archive]
+
+
+def test_watermark_key_is_stable_across_an_archive_move(tmp_path):
+    from sessionator.store import watermark_key
+
+    name = f"rollout-2026-07-12T14-00-00-{DESKTOP_UUID}.jsonl"
+    live = tmp_path / "sessions" / "2026" / "07" / "12" / name
+    archived = tmp_path / "archived_sessions" / name
+
+    assert codex.watermark_key(live) == f"codex:{DESKTOP_UUID}"
+    assert codex.watermark_key(live) == codex.watermark_key(archived)
+    assert watermark_key(codex, live) == f"codex:{DESKTOP_UUID}"
+
+
+def test_claude_watermark_key_is_the_session_uuid(tmp_path, claude_fixtures):
+    from sessionator.store import watermark_key
+
+    path = _claude_session(claude_fixtures)
+    assert claude.watermark_key(path) == "claude:4f00dc4e-0d36-4bd9-a481-39ef82c19509"
+    assert watermark_key(claude, path) == claude.watermark_key(path)
+
+
+def test_watermark_key_falls_back_for_an_adapter_without_one():
+    from sessionator.store import watermark_key
+
+    class Bare:
+        pass
+
+    class Broken:
+        @staticmethod
+        def watermark_key(path):
+            raise RuntimeError("nope")
+
+    assert watermark_key(Bare, "/x/y.jsonl") == "path:/x/y.jsonl"
+    assert watermark_key(Broken, "/x/y.jsonl") == "path:/x/y.jsonl"
+    assert watermark_key(None, "/x/y.jsonl") == "path:/x/y.jsonl"
