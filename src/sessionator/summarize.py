@@ -28,7 +28,7 @@ import re
 import subprocess
 
 from .adapters._common import SUMMARIZER_SENTINEL
-from .config import Config, load as load_config
+from .config import DEFAULT_SUMMARIZE, Config, load as load_config
 from .locking import FileLock, LockBusy
 from .schema import RESOLVED_VALUES, SUMMARY_FIELDS
 from .store import Store
@@ -195,7 +195,7 @@ def _invoke_cli(config, cli_harness, cli_path, prompt) -> str | None:
 
 def _invoke_claude(config, cli_path, prompt) -> str | None:
     settings = config.summarize.get("claude", {})
-    model = settings.get("model") or "opus-4.8"
+    model = settings.get("model") or DEFAULT_SUMMARIZE["claude"]["model"]
     env = os.environ.copy()
     # Use interactive session credentials, not a stale/empty API key.
     env.pop("ANTHROPIC_API_KEY", None)
@@ -215,8 +215,8 @@ def _invoke_claude(config, cli_path, prompt) -> str | None:
 
 def _invoke_codex(config, cli_path, prompt) -> str | None:
     settings = config.summarize.get("codex", {})
-    model = settings.get("model") or "gpt-5.6-luna"
-    reasoning = settings.get("reasoning") or "high"
+    model = settings.get("model") or DEFAULT_SUMMARIZE["codex"]["model"]
+    reasoning = settings.get("reasoning") or DEFAULT_SUMMARIZE["codex"]["reasoning"]
     attempts = [
         [cli_path, "exec", "-m", model, "-c", f"model_reasoning_effort={reasoning}", prompt],
         [cli_path, "exec", "-m", model, prompt],
