@@ -363,8 +363,10 @@ def _invoke_claude(config, cli_path, prompt) -> str | None:
         "--settings", '{"enabledPlugins":{}}',
         "--no-session-persistence",
     ]
-    for args in ([*base, "--model", model, prompt], [*base, prompt]):
-        out = _run(args, env=env)
+    # The prompt travels on stdin, never in argv: it carries session excerpts,
+    # and argv is readable by every process on the machine (`ps`).
+    for args in ([*base, "--model", model], [*base]):
+        out = _run(args, env=env, prompt=prompt)
         if out and "@@S" in out:
             return out
     return out or None
@@ -375,23 +377,25 @@ def _invoke_codex(config, cli_path, prompt) -> str | None:
     model = settings.get("model") or DEFAULT_SUMMARIZE["codex"]["model"]
     reasoning = settings.get("reasoning") or DEFAULT_SUMMARIZE["codex"]["reasoning"]
     attempts = [
-        [cli_path, "exec", "-m", model, "-c", f"model_reasoning_effort={reasoning}", prompt],
-        [cli_path, "exec", "-m", model, prompt],
-        [cli_path, "exec", prompt],
+        [cli_path, "exec", "-m", model, "-c", f"model_reasoning_effort={reasoning}"],
+        [cli_path, "exec", "-m", model],
+        [cli_path, "exec"],
     ]
     for args in attempts:
-        out = _run(args, env=os.environ.copy())
+        # Prompt on stdin (codex exec reads it when no positional prompt is
+        # given), so session text never appears in the process list.
+        out = _run(args, env=os.environ.copy(), prompt=prompt)
         if out and "@@S" in out:
             return out
     return out or None
 
 
-def _run(args, env) -> str | None:
+def _run(args, env, prompt: str = "") -> str | None:
     try:
         proc = subprocess.run(
             args,
             env=env,
-            stdin=subprocess.DEVNULL,  # codex exec waits on stdin EOF otherwise
+            input=prompt,  # delivered on stdin and closed (EOF), never via argv
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=300,

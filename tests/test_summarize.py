@@ -250,3 +250,37 @@ def test_apply_ignores_a_segment_someone_else_resolved(tmp_path):
     )
     assert updated == 0
     assert store.load()[sid].summary["asked"] != "late"
+
+
+def test_prompt_travels_on_stdin_not_argv(monkeypatch):
+    from pathlib import Path
+    """Session excerpts must never appear in the process list."""
+    import subprocess
+    from sessionator import summarize
+    from sessionator.config import Config, Source
+
+    seen = []
+
+    class _P:
+        returncode = 0
+        stdout = "@@S1@@\n- **Asked:** x\n"
+
+    def fake_run(args, **kw):
+        seen.append((list(args), kw.get("input")))
+        return _P()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    cfg = Config(
+        data_dir=Path("/nonexistent"),
+        exclusions=[],
+        sources={"claude": Source(name="claude", enabled=True, transcript_dir="", cli="/x/claude"),
+                 "codex": Source(name="codex", enabled=True, transcript_dir="", cli="/x/codex")},
+        summarize={"claude": {"model": "haiku"}, "codex": {"model": "m", "reasoning": "low"}},
+        path=Path("/nonexistent/config.toml"),
+    )
+    secret = "USER: the private thing"
+    assert summarize._invoke_claude(cfg, "/x/claude", secret)
+    assert summarize._invoke_codex(cfg, "/x/codex", secret)
+    for args, stdin_text in seen:
+        assert secret not in " ".join(args)
+        assert stdin_text == secret
