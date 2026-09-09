@@ -5,8 +5,8 @@ The record is the single unit stored per session (one JSON object per line in
 uniform session-key (``sid``) helpers, and validation. It has no I/O and no
 dependencies beyond the standard library.
 
-The field set and their semantics are fixed by the T-001 resolution. Three
-fields are operational additions the runtime/adapter designs require and T-001
+The field set and their semantics are fixed by the T-001 resolution. The
+fields below are operational additions the runtime/adapter designs require and T-001
 does not enumerate — they are additive and nullable/zero-valued so a v1 reader
 that ignores them still sees a conformant record:
 
@@ -16,6 +16,13 @@ that ignores them still sees a conformant record:
   defensive rule 1).
 * ``forked_from`` — Codex fork lineage (``forked_from_id``), captured per T-007
   defensive rule 4; ``None`` for Claude and non-forked Codex sessions.
+* ``summary_segments`` — the audit trail behind ``summary``: one entry per cut
+  (a compaction, a session end, a manual request, or the one whole-session
+  ``backfill`` cut a never-hooked session gets). ``summary`` stays the rolled-up
+  five-field dict every consumer already reads; a segment records which slice of
+  the excerpt was folded into it and what that slice alone said.
+* ``client`` — the harness build that produced the session (e.g. ``claude-code``,
+  ``Codex Desktop``), for telling desktop-app sessions from TUI ones.
 """
 
 from __future__ import annotations
@@ -31,7 +38,22 @@ SUMMARY_FIELDS = ("asked", "learned", "completed", "left_off", "next_steps")
 
 RESOLVED_VALUES = ("open", "done", "unknown")
 
-SUMMARY_STATES = ("pending", "stale", "done", "error")
+SUMMARY_STATES = ("pending", "stale", "done", "error", "partial")
+
+# Segment events, in the order they typically occur. ``backfill`` is the single
+# whole-session cut a never-hooked session gets; ``change`` is a growth cut on a
+# session already carrying segments; ``manual`` is a user-requested cut.
+SEGMENT_EVENTS = (
+    "precompact", "postcompact", "session_end", "stop", "backfill", "change",
+    "manual",
+)
+
+SEGMENT_STATES = ("pending", "done", "error")
+
+# Segment keys, in write order (turn ordinals, not byte offsets — see below).
+SEGMENT_FIELDS = (
+    "seq", "event", "trigger", "start", "end", "bytes", "at", "state", "summary",
+)
 
 
 def empty_summary() -> dict:
@@ -93,6 +115,8 @@ _PERSIST_FIELDS = (
     "excerpt_path",
     "summary_state",
     "parse_warnings",
+    "summary_segments",
+    "client",
 )
 
 
@@ -128,10 +152,20 @@ class Record:
     excerpt_path: str | None = None
     summary_state: str = "pending"
     parse_warnings: int = 0
+    summary_segments: list = field(default_factory=list)
+    client: str | None = None
     schema_version: int = SCHEMA_VERSION
 
     # Transient — never serialized (see to_dict).
     excerpt: str = ""
+    # Transient: the untrimmed excerpt and its turn count, as the adapter just
+    # extracted them. Segment slices are cut from these (the stored ``excerpt``
+    # is middle-trimmed at 36k), and only a fresh extraction has them.
+    excerpt_full: str = ""
+    turn_count: int = 0
+    # Transient: cut points the adapter saw in this transcript (compaction
+    # markers), as [{event, trigger, turn}]; reconcile turns them into segments.
+    boundaries: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Serializable dict in canonical field order, excluding the transient
@@ -179,6 +213,12 @@ class Record:
             excerpt_path=d.get("excerpt_path"),
             summary_state=d.get("summary_state", "pending"),
             parse_warnings=int(d.get("parse_warnings") or 0),
+            summary_segments=[
+                dict(seg)
+                for seg in (d.get("summary_segments") or [])
+                if isinstance(seg, dict)
+            ],
+            client=d.get("client"),
             schema_version=int(d.get("schema_version") or SCHEMA_VERSION),
         )
 
@@ -204,4 +244,38 @@ def validate(rec: Record) -> list[str]:
         problems.append(f"bad summary_state: {rec.summary_state!r}")
     if set(rec.summary or {}) != set(SUMMARY_FIELDS):
         problems.append("summary must have exactly the five named fields")
+    if not isinstance(rec.summary_segments, list):
+        problems.append("summary_segments must be a list")
+    else:
+        for i, seg in enumerate(rec.summary_segments):
+            problems += [f"segment {i}: {p}" for p in _segment_problems(seg)]
+    if rec.client is not None and not isinstance(rec.client, str):
+        problems.append(f"bad client: {rec.client!r}")
+    return problems
+
+
+def _segment_problems(seg) -> list[str]:
+    """Schema problems in one ``summary_segments`` entry. ``start``/``end`` are
+    half-open turn ordinals into the excerpt turn sequence (not byte offsets);
+    ``bytes`` is the transcript size at cut time, used only to detect growth."""
+    if not isinstance(seg, dict):
+        return ["not an object"]
+    problems = []
+    for key in ("seq", "start", "end", "bytes"):
+        v = seg.get(key)
+        if not isinstance(v, int) or isinstance(v, bool):
+            problems.append(f"{key} must be an int")
+    if isinstance(seg.get("start"), int) and isinstance(seg.get("end"), int):
+        if seg["start"] > seg["end"]:
+            problems.append("start must be <= end")
+    if seg.get("event") not in SEGMENT_EVENTS:
+        problems.append(f"unknown event: {seg.get('event')!r}")
+    if seg.get("state") not in SEGMENT_STATES:
+        problems.append(f"bad state: {seg.get('state')!r}")
+    summary = seg.get("summary")
+    if summary is not None:
+        if not isinstance(summary, dict):
+            problems.append("summary must be an object or null")
+        elif set(summary) != set(SUMMARY_FIELDS):
+            problems.append("segment summary must have exactly the five fields")
     return problems

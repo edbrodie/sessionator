@@ -1,4 +1,7 @@
+import json
 from pathlib import Path
+
+import pytest
 
 from sessionator.adapters import ADAPTERS, claude, codex
 from conftest import make_config
@@ -66,6 +69,105 @@ def test_codex_extract(tmp_path, codex_fixtures):
     assert "[private]" in rec.excerpt
 
 
+# --- codex, current rollout format (codex-cli 0.15x, desktop + CLI) --------
+
+CURRENT_UUID = "01a0820e-0000-7000-8000-00000000002e"
+
+
+def _current_session(root):
+    return (
+        root / "2026" / "09" / "08"
+        / f"rollout-2026-09-08T18-26-27-{CURRENT_UUID}.jsonl"
+    )
+
+
+@pytest.fixture
+def current_rec(tmp_path, codex_current_fixtures):
+    cfg = make_config(tmp_path, codex_dir=codex_current_fixtures)
+    rec = codex.extract(_current_session(codex_current_fixtures), cfg)
+    assert rec is not None, "current-format rollout must not be dropped"
+    return rec
+
+
+def test_codex_current_format_extracts(current_rec):
+    # The regression: turns moved from `event_msg`/`user_message` to
+    # `response_item`/`message`, so the legacy-only walk saw no human input and
+    # `finish()` returned None for every 0.15x session.
+    assert current_rec.sid == f"codex/{CURRENT_UUID}"
+    assert current_rec.native_id == CURRENT_UUID
+    assert current_rec.client == "Codex Desktop"
+    assert current_rec.cwd == "/home/u/proj"
+    assert current_rec.model == "gpt-6-astra"
+    # Date comes from the first *real* user turn, not from the injected one.
+    assert current_rec.date == "2026-09-08"
+
+
+def test_codex_current_format_counts_only_human_turns(current_rec):
+    roles = [line.split(":", 1)[0] for line in current_rec.excerpt.split("\n\n")]
+    assert roles.count("USER") == 2
+    assert roles.count("ASSISTANT") == 2
+    assert current_rec.turn_count == 4
+
+
+def test_codex_current_injected_user_messages_are_not_turns(current_rec):
+    # `<environment_context>` is written by Codex on the user's behalf.
+    assert "<environment_context>" not in current_rec.excerpt
+    assert "app-context" not in current_rec.excerpt
+
+
+def test_codex_current_duplicate_channels_count_once(current_rec):
+    # The same first turn is also present as a legacy `event_msg`/`user_message`
+    # and as an `item_completed`/`UserMessage` echo.
+    assert current_rec.excerpt.count("the parser drops every desktop session") == 1
+
+
+def test_codex_current_compacted_marks_one_boundary(current_rec):
+    assert current_rec.boundaries == [
+        {"event": "precompact", "trigger": "auto", "turn": 2}
+    ]
+
+
+def test_codex_current_excerpt_has_user_text_and_no_private_span(current_rec):
+    assert "the parser drops every desktop session" in current_rec.excerpt
+    assert "ship it" in current_rec.excerpt
+    assert "sk-secret-abc123" not in current_rec.excerpt
+    assert "[private]" in current_rec.excerpt
+
+
+def test_codex_current_tool_activity_is_harvested(current_rec):
+    # exec custom_tool_call -> command; its output -> tests + commit.
+    assert current_rec.tests == {"text": "3 passed", "broken": False}
+    assert any(sha == "abc1234" for sha, _ in current_rec.commits)
+    # item_completed items -> files, mcp, repo/branch.
+    assert ["M", "adapters/codex.py"] in current_rec.files
+    assert "codex_app" in current_rec.mcp
+    assert current_rec.repo == "acme/proj"
+    assert current_rec.branch == "main"
+
+
+def test_codex_current_argv_command_unwraps_login_shell():
+    assert codex._argv_to_command(["/bin/zsh", "-lc", "git status"]) == "git status"
+    assert codex._argv_to_command(["ls", "-la"]) == "ls -la"
+    assert codex._argv_to_command("already a string") == "already a string"
+    assert codex._argv_to_command([]) is None
+
+
+@pytest.mark.parametrize(
+    "text,injected",
+    [
+        ("<environment_context>\n<cwd>/x</cwd>", True),
+        ("  <user_instructions>be nice</user_instructions>", True),
+        ("<turn_aborted>", True),
+        ("# AGENTS.md instructions for /home/u/proj", True),
+        ("", True),
+        ("fix the parser", False),
+        ("# Files mentioned by the user:\n## notes.md", False),
+    ],
+)
+def test_codex_injected_user_text_detection(text, injected):
+    assert codex._is_injected_user_text(text) is injected
+
+
 def test_codex_headless_filtered(tmp_path, codex_headless_fixtures):
     cfg = make_config(tmp_path, codex_dir=codex_headless_fixtures)
     session = (
@@ -89,3 +191,207 @@ def test_malformed_line_counts_warning(tmp_path, claude_fixtures):
     rec = claude.extract(f, cfg)
     assert rec is not None
     assert rec.parse_warnings == 1
+
+
+def _write_rollout(tmp_path, lines):
+    d = tmp_path / "codex" / "2026" / "07" / "11"
+    d.mkdir(parents=True)
+    uuid = "019f7777-0000-7000-8000-000000000009"
+    meta = {
+        "type": "session_meta",
+        "payload": {
+            "id": uuid,
+            "session_id": "shared-thread-009",
+            "originator": "codex-tui",
+            "thread_source": "user",
+            "cwd": "/home/u/proj",
+        },
+    }
+    p = d / f"rollout-2026-07-11T09-00-00-{uuid}.jsonl"
+    p.write_text("\n".join(json.dumps(x) for x in [meta, *lines]) + "\n")
+    return p
+
+
+def _user(msg, ts="2026-07-11T09:00:01Z"):
+    return {
+        "type": "event_msg",
+        "timestamp": ts,
+        "payload": {"type": "user_message", "message": msg},
+    }
+
+
+def _agent(msg):
+    return {"type": "event_msg", "payload": {"type": "agent_message", "message": msg}}
+
+
+def test_codex_compacted_line_marks_a_boundary(tmp_path):
+    path = _write_rollout(
+        tmp_path,
+        [
+            _user("start the parser work"),
+            _agent("on it"),
+            {"type": "compacted"},
+            {"type": "compacted"},  # collapses: same turn ordinal
+            _user("now finish it"),
+            _agent("done"),
+        ],
+    )
+    cfg = make_config(tmp_path, codex_dir=tmp_path / "codex")
+    rec = codex.extract(path, cfg)
+    assert rec is not None
+    # The cut sits after the two turns that preceded the compaction.
+    assert rec.boundaries == [{"event": "precompact", "trigger": "auto", "turn": 2}]
+    assert rec.turn_count == 4
+    assert rec.excerpt_full and rec.excerpt_full == rec.excerpt
+
+
+def test_walker_boundary_before_any_turn_is_dropped():
+    from sessionator.adapters._common import Walker
+
+    w = Walker()
+    w.mark_boundary("precompact", "auto")  # nothing to cut yet
+    assert w.boundaries == []
+    w.add_user("hello")
+    w.mark_boundary("precompact", "auto")
+    assert w.boundaries == [{"event": "precompact", "trigger": "auto", "turn": 1}]
+
+
+# --- codex client filtering: a denylist, not an allowlist -------------------
+
+DESKTOP_UUID = "019fd35c-0000-7000-8000-00000000000d"
+
+
+def _desktop_session(root):
+    return (
+        root / "2026" / "07" / "12"
+        / f"rollout-2026-07-12T14-00-00-{DESKTOP_UUID}.jsonl"
+    )
+
+
+def test_codex_desktop_session_is_ingested(tmp_path, codex_desktop_fixtures):
+    # The regression this denylist exists for: `Codex Desktop` is ~99% of this
+    # user's Codex sessions and the old `originator == "codex-tui"` allowlist
+    # dropped every one of them.
+    cfg = make_config(tmp_path, codex_dir=codex_desktop_fixtures)
+    rec = codex.extract(_desktop_session(codex_desktop_fixtures), cfg)
+    assert rec is not None
+    assert rec.sid == f"codex/{DESKTOP_UUID}"
+    assert rec.client == "Codex Desktop"
+    assert rec.model == "gpt-5.6-luna"
+    assert any(sha == "7ac9911" for sha, _ in rec.commits)
+
+
+def test_claude_records_carry_their_client(tmp_path, claude_fixtures):
+    cfg = make_config(tmp_path, claude_dir=claude_fixtures)
+    rec = claude.extract(_claude_session(claude_fixtures), cfg)
+    assert rec.client == "claude-code"
+
+
+@pytest.mark.parametrize(
+    "originator,denied",
+    [
+        ("codex-exec", True),
+        ("codex_exec", True),        # normalized: underscores are hyphens
+        ("Codex Exec", True),        # normalized: spaces and case
+        ("codex-subagent", True),
+        ("codex-mcp", True),
+        ("codex-cloud", True),
+        ("codex-automation", True),
+        ("", True),                  # every real client sets one
+        ("   ", True),
+        (None, True),
+        (7, True),
+        ("codex-tui", False),
+        ("Codex Desktop", False),
+        ("codex-vscode-2029", False),  # a client that does not exist yet
+    ],
+)
+def test_originator_denylist(originator, denied):
+    assert codex._originator_denied(originator) is denied
+
+
+def test_unknown_originator_with_user_turns_is_ingested(tmp_path):
+    path = _write_rollout(tmp_path, [_user("hello from the future"), _agent("hi")])
+    text = path.read_text().replace('"codex-tui"', '"codex-neuralink"')
+    path.write_text(text)
+    cfg = make_config(tmp_path, codex_dir=tmp_path / "codex")
+    rec = codex.extract(path, cfg)
+    assert rec is not None and rec.client == "codex-neuralink"
+
+
+def test_subagent_thread_source_still_filtered_whatever_the_client(tmp_path):
+    path = _write_rollout(tmp_path, [_user("nested work"), _agent("ok")])
+    path.write_text(path.read_text().replace('"user"', '"subagent"'))
+    cfg = make_config(tmp_path, codex_dir=tmp_path / "codex")
+    assert codex.extract(path, cfg) is None
+
+
+# --- archived_sessions + watermark identity --------------------------------
+
+def test_discover_sources_includes_the_archive_sibling(tmp_path):
+    home = tmp_path / "codex-home"
+    (home / "sessions" / "2026" / "07" / "12").mkdir(parents=True)
+    archive = home / "archived_sessions"
+    archive.mkdir()
+    cfg = make_config(tmp_path, codex_dir=home / "sessions")
+
+    assert codex.discover_sources(cfg) == [home / "sessions", archive]
+
+    # Absent archive dir: just the one root, no error.
+    archive.rmdir()
+    assert codex.discover_sources(cfg) == [home / "sessions"]
+
+
+def test_archived_rollouts_are_enumerated(tmp_path, codex_desktop_fixtures):
+    import shutil
+
+    home = tmp_path / "codex-home"
+    (home / "sessions").mkdir(parents=True)
+    archive = home / "archived_sessions"
+    archive.mkdir()
+    # Archiving flattens: the dated dirs are not preserved.
+    shutil.copy(_desktop_session(codex_desktop_fixtures), archive)
+
+    cfg = make_config(tmp_path, codex_dir=home / "sessions")
+    found = [
+        p
+        for root in codex.discover_sources(cfg)
+        for p, _m, _s in codex.enumerate_sessions(root)
+    ]
+    assert [p.parent for p in found] == [archive]
+
+
+def test_watermark_key_is_stable_across_an_archive_move(tmp_path):
+    from sessionator.store import watermark_key
+
+    name = f"rollout-2026-07-12T14-00-00-{DESKTOP_UUID}.jsonl"
+    live = tmp_path / "sessions" / "2026" / "07" / "12" / name
+    archived = tmp_path / "archived_sessions" / name
+
+    assert codex.watermark_key(live) == f"codex:{DESKTOP_UUID}"
+    assert codex.watermark_key(live) == codex.watermark_key(archived)
+    assert watermark_key(codex, live) == f"codex:{DESKTOP_UUID}"
+
+
+def test_claude_watermark_key_is_the_session_uuid(tmp_path, claude_fixtures):
+    from sessionator.store import watermark_key
+
+    path = _claude_session(claude_fixtures)
+    assert claude.watermark_key(path) == "claude:4f00dc4e-0d36-4bd9-a481-39ef82c19509"
+    assert watermark_key(claude, path) == claude.watermark_key(path)
+
+
+def test_watermark_key_falls_back_for_an_adapter_without_one():
+    from sessionator.store import watermark_key
+
+    class Bare:
+        pass
+
+    class Broken:
+        @staticmethod
+        def watermark_key(path):
+            raise RuntimeError("nope")
+
+    assert watermark_key(Bare, "/x/y.jsonl") == "path:/x/y.jsonl"
+    assert watermark_key(Broken, "/x/y.jsonl") == "path:/x/y.jsonl"
+    assert watermark_key(None, "/x/y.jsonl") == "path:/x/y.jsonl"

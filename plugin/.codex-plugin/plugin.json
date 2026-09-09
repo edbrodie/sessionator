@@ -1,0 +1,34 @@
+{
+  "name": "sessionator",
+  "version": "0.2.0",
+  "description": "Search local Claude Code and Codex session history, inspect summaries, and resume past work.",
+  "author": {
+    "name": "Ed Brodie"
+  },
+  "homepage": "https://github.com/edbrodie/sessionator",
+  "repository": "https://github.com/edbrodie/sessionator",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "sessions",
+    "history",
+    "search",
+    "resume",
+    "local-first"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Sessionator",
+    "shortDescription": "Find and resume past Claude Code and Codex work",
+    "category": "Productivity",
+    "longDescription": "Search locally stored Claude Code and Codex sessions, inspect summaries, and retrieve CLI resume commands. Summaries use Haiku by default with Codex available as a fallback.",
+    "developerName": "Ed Brodie",
+    "defaultPrompt": [
+      "Find my recent sessions for this project."
+    ],
+    "capabilities": [
+      "Read"
+    ]
+  }
+}

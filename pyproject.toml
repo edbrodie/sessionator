@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "sessionator"
-version = "0.1.0"
+version = "0.2.0"
 description = "Unified, searchable, local-only history of your Claude Code and Codex sessions — find past work, see how it ended, resume it."
 readme = "README.md"
 # tomllib (stdlib TOML reader) is 3.11+.

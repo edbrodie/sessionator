@@ -150,9 +150,22 @@ def _to_record(uuid, transcript_path, fields) -> Record:
         transcript_path=transcript_path,
         summary_state="pending",
         parse_warnings=fields["parse_warnings"],
+        # One client writes this format; Codex has several and reads its own
+        # originator off the rollout.
+        client="claude-code",
     )
     rec.excerpt = fields["excerpt"]
+    rec.excerpt_full = fields["excerpt_full"]
+    rec.turn_count = fields["turn_count"]
+    rec.boundaries = fields["boundaries"]
     return rec
+
+
+def watermark_key(path) -> str:
+    """Identity of a Claude session for the watermark scan: the filename stem,
+    which is the session uuid (and the ``--resume`` id). Path-independent, so a
+    moved projects dir does not re-extract every session."""
+    return f"{NAME}:{Path(path).stem}"
 
 
 def _tr_texts(cc):

@@ -83,11 +83,20 @@ TEST_PASS_RX = re.compile(r"(\d+)\s+pass(?:ed|ing|es)?\b", re.IGNORECASE)
 TEST_FAILWORD_RX = re.compile(r"\bFAIL(?:ED)?\b|✗|✘|\bTraceback\b|\bError:", re.IGNORECASE)
 TEST_OKWORD_RX = re.compile(r"\ball tests? pass|\bPASS\b|✓|\bok\b|\bsucce", re.IGNORECASE)
 
-# First genuine human turn signatures of sessionator's OWN summarizer batch
-# calls (self-pollution guard — T-007 rule 3). The new backfill batch prompt
-# opens with the @@S1@@ marker; the two legacy prompt openers are also matched.
+# Sentinel line every sessionator summarizer prompt opens with. The prose
+# openers below are ^-anchored and so never matched the real prompt once its
+# wording drifted; an explicit, unanchored sentinel cannot drift and survives a
+# harness wrapping the prompt in its own preamble. Both prompt builders in
+# summarize.py emit it as their first line.
+SUMMARIZER_SENTINEL = "@@SESSIONATOR-SUMMARIZER@@"
+
+# First genuine human turn signatures of sessionator's OWN summarizer calls
+# (self-pollution guard — T-007 rule 3). The sentinel is matched anywhere in the
+# turn; the batch marker and the legacy prompt openers stay for transcripts
+# recorded before the sentinel existed.
 SUMMARIZER_PROMPT_RX = re.compile(
-    r"^\s*@@S\d+@@"
+    re.escape(SUMMARIZER_SENTINEL)
+    + r"|^\s*@@S\d+@@"
     r"|^\s*(?:You\s+)?refine bullets for\b"
     r"|^\s*You (?:refine|summari[sz]e) \w+ .*session summaries\b"
     r"|^\s*Summari[sz]e this Claude Code session transcript\b",
@@ -175,6 +184,7 @@ class Walker:
     def __init__(self):
         self.cwd = None
         self.turns = []          # ordered ("USER"/"ASSISTANT", text)
+        self.boundaries = []     # cut points seen in the transcript itself
         self.n_user = 0
         self.first_ts = None
         self.last_ts = None
@@ -212,6 +222,18 @@ class Walker:
 
     def note_warning(self):
         self.parse_warnings += 1
+
+    def mark_boundary(self, event, trigger=None):
+        """Note a cut point at the current turn ordinal — a compaction marker
+        the transcript carries. For a session no hook ever saw, this is the only
+        record of where its history was dropped, and so of where a summary
+        segment should end. Repeated markers at the same ordinal collapse."""
+        turn = len(self.turns)
+        if turn <= 0:
+            return
+        if self.boundaries and self.boundaries[-1]["turn"] == turn:
+            return
+        self.boundaries.append({"event": event, "trigger": trigger, "turn": turn})
 
     def set_cwd(self, cwd):
         if self.cwd is None and isinstance(cwd, str) and cwd:
@@ -462,8 +484,11 @@ class Walker:
             if m:
                 branch = m.group(1)
 
-        # Excerpt (capped, private already stripped at ingest).
-        excerpt = "\n\n".join(f"{role}: {text}" for role, text in self.turns)
+        # Excerpt (capped, private already stripped at ingest). The untrimmed
+        # text is returned alongside it: a segment sidecar is cut from the real
+        # turns, not from a 36k middle-trim of them.
+        excerpt_full = "\n\n".join(f"{role}: {text}" for role, text in self.turns)
+        excerpt = excerpt_full
         if len(excerpt) > EXCERPT_LIMIT:
             excerpt = excerpt[:24000] + "\n...[trimmed]...\n" + excerpt[-12000:]
 
@@ -521,6 +546,9 @@ class Walker:
             "tests": tests,
             "resolved": resolved,
             "excerpt": excerpt,
+            "excerpt_full": excerpt_full,
+            "turn_count": len(self.turns),
+            "boundaries": list(self.boundaries),
             "parse_warnings": self.parse_warnings,
         }
 

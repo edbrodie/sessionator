@@ -1,0 +1,30 @@
+{
+  "description": "Captures each Claude Code session into the local sessionator history. PreCompact runs asynchronously and cuts an incremental summary segment before context is compacted; SessionEnd cuts the final segment when the session finishes. Both pipe the hook payload to `sessionator ingest --hook`, which spools it and detaches a worker, so neither blocks. Silent no-op when the sessionator CLI is not installed, and opt-out per project via .claude/sessionator.local.md. Never touches Codex or ~/.codex configuration.",
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/claude-hooks/scripts/ingest-hook.sh\"",
+            "async": true,
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/claude-hooks/scripts/ingest-hook.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

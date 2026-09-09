@@ -1,6 +1,6 @@
 """Command-line entry point for sessionator.
 
-Six product verbs (T-002), search implicit:
+Product verbs (T-002), search implicit:
 
 * ``sessionator <terms…> [filters]`` — bare invocation IS search (the 90% case).
 * ``sessionator show <sid-prefix>`` — full record + transcript tail + resume line.
@@ -8,10 +8,18 @@ Six product verbs (T-002), search implicit:
 * ``sessionator ingest`` — manual reconcile.
 * ``sessionator status`` — config/sources/index health (doubles as doctor).
 * ``sessionator forget <sid|pattern>`` — privacy retire (stub here).
+* ``sessionator summarize <sid-prefix>`` — summarize one session now.
+* ``sessionator setup codex|status`` — install the Codex capture hooks, or report
+  how capture is wired up on this machine.
 
-Every command except the hidden ``_backfill`` runs a fast, non-blocking reconcile
-first (deterministic inline pass + detached summary backfill), so a query always
-sees the just-finished session and never waits on summaries.
+Query verbs run a fast, non-blocking reconcile first (deterministic inline pass +
+detached summary backfill), so a query always sees the just-finished session and
+never waits on summaries. ``setup``, ``forget`` and the hidden ``_backfill`` /
+``_hook_worker`` do not: configuring or retiring is not querying.
+
+``ingest --hook`` is the harness hook entry point and is special in every way
+that matters — it never prints, never exits non-zero, and never reaches argparse.
+See ``hooks.py``.
 
 Output discipline: **stdout = data only, stderr = diagnostics.** Exit codes
 follow grep — ``0`` hits, ``1`` zero hits, ``2`` error — so scripts branch
@@ -27,9 +35,12 @@ from . import __version__
 
 # Commands that take an explicit verb. Anything else is implicit search.
 # ``convert-legacy`` is a hidden one-time migration verb (absent from help).
+# How long `summarize` waits for a running background sweep before giving up.
+SUMMARIZE_WAIT_SECONDS = 600.0
+
 _COMMANDS = (
-    "search", "show", "resume", "ingest", "status", "forget",
-    "_backfill", "convert-legacy",
+    "search", "show", "resume", "ingest", "status", "forget", "summarize",
+    "setup", "_backfill", "_hook_worker", "convert-legacy",
 )
 
 
@@ -44,6 +55,15 @@ def main(argv: list[str] | None = None) -> int:
     if argv[0] in ("-h", "--help"):
         _print_top_help()
         return 0
+
+    # `ingest --hook` is the harness hook entry point and is handled BEFORE
+    # argparse: it must never write to stdout (Claude Code parses a hook's
+    # stdout) and must never exit non-zero (a failing hook is a user-visible
+    # error in the middle of their session). Everything it could complain
+    # about — bad flags, no stdin, an unwritable data dir — is silently a
+    # no-op instead.
+    if argv[0] == "ingest" and "--hook" in argv[1:]:
+        return _hook_ingest()
 
     if argv[0] in _COMMANDS:
         command, rest = argv[0], argv[1:]
@@ -62,8 +82,14 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_status(rest)
     if command == "_backfill":
         return _cmd_backfill(rest)
+    if command == "_hook_worker":
+        return _cmd_hook_worker(rest)
+    if command == "setup":
+        return _cmd_setup(rest)
     if command == "forget":
         return _cmd_forget(rest)
+    if command == "summarize":
+        return _cmd_summarize(rest)
     if command == "convert-legacy":
         return _cmd_convert(rest)
 
@@ -80,6 +106,9 @@ def _print_top_help() -> None:
         "       sessionator status                  config, sources, index health\n"
         "       sessionator forget <sid|cwd-glob>   retire session(s): delete +\n"
         "                                           tombstone so ingest won't re-add\n"
+        "       sessionator summarize <sid-prefix>  summarize one session now\n"
+        "       sessionator setup codex|status      install Codex capture hooks,\n"
+        "                                           or report how capture is wired\n"
         "\nfilters: --keyword --repo --cwd --model --harness --since --until "
         "--resolved --limit --format {compact,full,ndjson}\n"
         "privacy: config [exclusions].cwd_globs removes matching sessions (retro-\n"
@@ -371,6 +400,133 @@ def _cmd_forget(argv: list[str]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# summarize — summarize one session now
+# ---------------------------------------------------------------------------
+
+def _cmd_summarize(argv: list[str]) -> int:
+    """Summarize one session on demand.
+
+    Segments are normally cut by hooks; this is the manual cut. It forces a
+    segment over everything not yet summarized (or, when nothing is new, over
+    the whole excerpt) and runs the summarizer in the foreground, because a user
+    who asked for a summary is waiting for one. ``--no-wait`` cuts the segment
+    and leaves it to the detached backfill.
+    """
+    ap = argparse.ArgumentParser(prog="sessionator summarize")
+    ap.add_argument("sid_prefix", help="unique sid prefix (e.g. claude/d78b1004)")
+    ap.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="cut the segment and let the background backfill summarize it",
+    )
+    ap.add_argument("--no-reconcile", action="store_true", help=argparse.SUPPRESS)
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as e:
+        return int(e.code) if e.code else 0
+
+    from .locking import FileLock, LockBusy
+    from .reconcile import kick_detached_backfill, transcript_size
+    from .render import _SUMMARY_ORDER
+    from .segments import (
+        append_segment, count_turns, rollup_state, slice_turns, split_turns,
+    )
+    from .store import Store
+    from .summarize import backfill
+
+    try:
+        cfg = _load_config_verbose()
+        if not args.no_reconcile:
+            _fast_reconcile(cfg)
+        store = Store(cfg)
+        records = store.load()
+    except Exception as e:  # pragma: no cover - defensive top-level
+        print(f"summarize error: {e}", file=sys.stderr)
+        return 2
+
+    rec = _resolve_one(records, args.sid_prefix)
+    if rec is None:
+        return 2
+    sid = rec.sid
+
+    if cfg.summarizer_cli(rec.harness) is None:
+        print(
+            "summarize error: no summarizer CLI found — install the claude or "
+            f"codex CLI, or set [sources.*].cli in {cfg.path}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Cut the manual segment under the store lock, so a concurrent reconcile or
+    # backfill cannot interleave with the read-modify-write.
+    try:
+        lock = FileLock(str(cfg.store_lock_path), blocking=True, timeout=600).acquire()
+    except LockBusy:
+        print("summarize error: store is busy, try again", file=sys.stderr)
+        return 2
+    try:
+        live = store.load()
+        rec = live.get(sid)
+        if rec is None:
+            print(f"no session matching '{args.sid_prefix}'", file=sys.stderr)
+            return 2
+        excerpt = store.read_excerpt(rec)
+        segment = append_segment(
+            rec,
+            event="manual",
+            trigger="user",
+            turn_count=count_turns(excerpt),
+            size=transcript_size(rec),
+            force=True,
+        )
+        if segment is not None:
+            text = slice_turns(
+                split_turns(excerpt), segment["start"], segment["end"]
+            )
+            store.write_segment_excerpt(rec, segment["seq"], text)
+            rec.summary_state = rollup_state(rec)
+            store.write(live)
+    finally:
+        lock.release()
+
+    if segment is None:
+        print(f"nothing to summarize for {sid} (empty excerpt)", file=sys.stderr)
+        return 1
+
+    if args.no_wait:
+        kick_detached_backfill(cfg, only_sid=sid)
+    else:
+        try:
+            # A user is waiting: block on a running sweep rather than yield to
+            # it, or the verb would print "still pending" while a background
+            # backfill happens to hold the lock.
+            stats = backfill(cfg, only_sid=sid, wait=SUMMARIZE_WAIT_SECONDS)
+            if stats.get("already_running"):
+                print(
+                    "summarize: a background backfill is still running; the "
+                    "segment is queued and will be summarized when it finishes",
+                    file=sys.stderr,
+                )
+        except Exception as e:  # pragma: no cover - defensive
+            print(f"summarize warning: {e}", file=sys.stderr)
+
+    rec = Store(cfg).load().get(sid)
+    if rec is None:  # pragma: no cover - defensive
+        return 2
+    summary = rec.summary or {}
+    print(f"● {sid}")
+    for key, label in _SUMMARY_ORDER:
+        print(f"  {label}: {summary.get(key) or '-'}")
+    if not any(summary.values()):
+        print(
+            f"  (summary still {rec.summary_state}"
+            + (" — running in the background)" if args.no_wait else ")"),
+            file=sys.stderr,
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # ingest / status / backfill (carried over)
 # ---------------------------------------------------------------------------
 
@@ -405,12 +561,13 @@ def _cmd_ingest(argv: list[str]) -> int:
 def _cmd_backfill(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="sessionator _backfill")
     ap.add_argument("--max-batches", type=int, default=None)
+    ap.add_argument("--sid", default=None, help="restrict the pass to one sid")
     args = ap.parse_args(argv)
 
     from .summarize import backfill
 
     try:
-        stats = backfill(max_batches=args.max_batches)
+        stats = backfill(max_batches=args.max_batches, only_sid=args.sid)
     except Exception as e:  # pragma: no cover - defensive top-level
         print(f"backfill error: {e}", file=sys.stderr)
         return 2
@@ -421,6 +578,193 @@ def _cmd_backfill(argv: list[str]) -> int:
         f"errors {stats.get('errors', 0)}"
         + (" (already running)" if stats.get("already_running") else "")
     )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# setup — install the Codex hooks, or report how capture is wired
+# ---------------------------------------------------------------------------
+
+def _cmd_setup(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        prog="sessionator setup",
+        description="Install the Codex capture hooks, or report capture status.",
+    )
+    ap.add_argument(
+        "target",
+        choices=["codex", "status"],
+        help="codex: merge the hooks into $CODEX_HOME/hooks.json; "
+        "status: report how capture is wired up on this machine",
+    )
+    ap.add_argument(
+        "--remove", action="store_true", help="remove our hooks instead (codex)"
+    )
+    ap.add_argument(
+        "--dry-run", action="store_true", help="print the change, write nothing"
+    )
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as e:
+        return int(e.code) if e.code else 0
+
+    # setup deliberately does NOT reconcile: it is a machine-configuration verb,
+    # and making it scan every transcript first would be a surprise.
+    if args.target == "status":
+        return _setup_status()
+    return _setup_codex(remove=args.remove, dry_run=args.dry_run)
+
+
+def _setup_codex(*, remove: bool, dry_run: bool) -> int:
+    from . import setup_hooks as sh
+
+    path = sh.hooks_path()
+    try:
+        cli_path = sh.resolve_cli()
+        command = sh.hook_command(cli_path)
+        existing = sh.read_hooks(path)
+    except sh.SetupError as e:
+        print(f"setup error: {e}", file=sys.stderr)
+        return 2
+
+    if remove:
+        if existing is None:
+            print(f"nothing to remove — {path} does not exist")
+            return 0
+        result = sh.unmerge(existing, command)
+        if not result.changed:
+            print(f"nothing to remove — no sessionator hooks in {path}")
+            return 0
+        delete = sh.is_empty(result.data)
+        for line in result.changes:
+            print(f"  {line}")
+        if dry_run:
+            print(
+                f"(dry-run) would {'delete' if delete else 'rewrite'} {path}; "
+                "nothing was written"
+            )
+            if not delete:
+                print(sh.render(result.data))
+            return 0
+        try:
+            if delete:
+                path.unlink()
+                print(f"removed {path} (nothing else was in it)")
+            else:
+                sh.write_hooks(path, result.data)
+                print(f"updated {path}")
+        except OSError as e:
+            print(f"setup error: cannot write {path}: {e}", file=sys.stderr)
+            return 2
+        print("Your own hooks in config.toml were not touched.")
+        return 0
+
+    result = sh.merge(existing, command)
+    print(f"sessionator hook command: {command}")
+    if not result.changed:
+        print(f"{path} is already up to date — nothing written")
+        return 0
+    for line in result.changes:
+        print(f"  {line}")
+    if dry_run:
+        print(f"(dry-run) would write {path}:")
+        print(sh.render(result.data))
+        return 0
+    try:
+        sh.write_hooks(path, result.data)
+    except OSError as e:
+        print(f"setup error: cannot write {path}: {e}", file=sys.stderr)
+        return 2
+    print(f"wrote {path}")
+    print(sh.TRUST_INSTRUCTIONS)
+    return 0
+
+
+def _setup_status() -> int:
+    from . import setup_hooks as sh
+
+    try:
+        cfg = _load_config_verbose()
+    except Exception as e:  # pragma: no cover - defensive top-level
+        print(f"setup status error: {e}", file=sys.stderr)
+        return 2
+
+    print("sessionator capture status")
+    try:
+        cli_path = sh.resolve_cli()
+        print(f"  cli:        {cli_path}")
+    except sh.SetupError:
+        cli_path = None
+        print("  cli:        not found on PATH (hooks cannot be installed)")
+
+    claude_hits = sh.find_claude_hooks()
+    if claude_hits:
+        print("  claude:     hook found in " + ", ".join(str(p) for p in claude_hits))
+    else:
+        print(
+            "  claude:     no sessionator hook found "
+            "(install the plugin: /plugin install sessionator@sessionator)"
+        )
+
+    path = sh.hooks_path()
+    command = sh.hook_command(cli_path) if cli_path else None
+    try:
+        data = sh.read_hooks(path)
+    except sh.SetupError as e:
+        data = None
+        print(f"  codex:      {path} unreadable — {e.args[0].splitlines()[0]}")
+    else:
+        if data is None:
+            print(f"  codex:      {path} absent (run `sessionator setup codex`)")
+        else:
+            ours = sh.find_ours(data, command) if command else {}
+            if ours:
+                print(f"  codex:      {', '.join(sorted(ours))} in {path}")
+            else:
+                print(f"  codex:      no sessionator hooks in {path}")
+
+    foreign = sh.count_config_toml_hooks()
+    print(
+        f"  config.toml: {foreign} hook table(s) — yours, never read or written "
+        "by setup"
+    )
+    print(f"  spool:      {sh.spool_depth(cfg)} pending payload(s)")
+    models = ", ".join(
+        f"{name} via {(cfg.summarize.get(name) or {}).get('model') or '?'}"
+        for name in ("claude", "codex")
+    )
+    print(f"  summarizer: prefer {cfg.summarize_prefer} · {models}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# hook entry points (never print: stdout belongs to the harness protocol)
+# ---------------------------------------------------------------------------
+
+def _hook_ingest() -> int:
+    """``sessionator ingest --hook``: spool stdin, detach a worker, exit 0.
+
+    Called from inside a harness hook, so it is silent and total: no stdout, no
+    stderr, no non-zero exit, whatever goes wrong. The real work happens in the
+    detached ``_hook_worker``."""
+    try:
+        from .hooks import spool_and_detach
+
+        raw = sys.stdin.buffer.read() if sys.stdin is not None else b""
+        spool_and_detach(raw)
+    except Exception:
+        pass
+    return 0
+
+
+def _cmd_hook_worker(argv: list[str]) -> int:
+    """Hidden: consume one spooled hook payload. Detached, output-less, exit 0."""
+    try:
+        from .hooks import run_worker
+
+        if argv:
+            run_worker(argv[0])
+    except Exception:
+        pass
     return 0
 
 
@@ -499,18 +843,35 @@ def _cmd_status(argv: list[str]) -> int:
     by_harness: dict[str, int] = {}
     pending = 0
     errors = 0
+    segmented = 0
+    segment_total = 0
+    segment_pending = 0
     for rec in records.values():
         by_harness[rec.harness] = by_harness.get(rec.harness, 0) + 1
-        if rec.summary_state in ("pending", "stale"):
+        if rec.summary_state in ("pending", "stale", "partial"):
             pending += 1
         elif rec.summary_state == "error":
             errors += 1
+        segs = rec.summary_segments or []
+        if segs:
+            segmented += 1
+            segment_total += len(segs)
+            segment_pending += sum(1 for s in segs if s.get("state") == "pending")
     print(f"  records:    {len(records)}", end="")
     if by_harness:
         print(" (" + ", ".join(f"{k}: {v}" for k, v in sorted(by_harness.items())) + ")")
     else:
         print()
     print(f"  summaries:  {pending} pending, {errors} errored")
+    print(
+        f"  segments:   {segment_total} in {segmented} session(s), "
+        f"{segment_pending} pending"
+    )
+    models = ", ".join(
+        f"{name} via {(cfg.summarize.get(name) or {}).get('model') or '?'}"
+        for name in ("claude", "codex")
+    )
+    print(f"  summarizer: prefer {cfg.summarize_prefer} · {models}")
 
     try:
         idx = Index(cfg)

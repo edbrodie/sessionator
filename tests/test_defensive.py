@@ -126,8 +126,9 @@ def test_rule4_codex_thread_source_not_user_filtered(tmp_path):
 
 
 def test_rule4_codex_subagent_originator_filtered(tmp_path):
-    # originator != codex-tui (a nested subagent thread) → not an interactive
-    # session. (Headless codex_exec is covered separately in test_adapters.)
+    # `codex-subagent` is on the machine-driven denylist → not an interactive
+    # session. (Headless codex_exec, the normalization of the denylist, and the
+    # unknown-client case that must NOT be filtered live in test_adapters.)
     assert _codex(tmp_path, "019f7005") is None
 
 

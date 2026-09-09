@@ -1,0 +1,41 @@
+{
+  "skill_name": "sessionator",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "what was I working on on 5 June?",
+      "expected_output": "A sessionator search scoped to the single day 2026-06-05 as a closed date range, in full format, with the resulting rows relayed as-is.",
+      "expectations": [
+        "The transcript contains a sessionator command whose first argument is the explicit verb search, not a bare term list",
+        "The command passes --since 2026-06-05 and --until 2026-06-05, converting the relative date phrasing into a closed absolute range",
+        "The command passes --format full",
+        "No transcript directory is read or grepped directly instead of calling the CLI",
+        "If the CLI is not installed, the response says so and offers the uvx --from git+https://github.com/edbrodie/sessionator invocation rather than installing anything"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "did I already fix the flaky auth test in the website repo?",
+      "expected_output": "A sessionator search filtered to the website repository, and on zero hits a documented broadening ladder rather than a claim that the work never happened.",
+      "expectations": [
+        "The first command is a sessionator search that passes --repo website",
+        "The free-text terms come from the ask, for example flaky auth test, and are not padded with invented keywords",
+        "On exit code 1 the response broadens one rung at a time, for example dropping terms and then swapping --repo website for --cwd website, instead of concluding immediately that no such session exists",
+        "The response does not treat exit code 1 as an error",
+        "sessionator status is only reached after the broadening rungs, and only if hits are still absent"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "pick up where I left off on the sqlite index work",
+      "expected_output": "A sessionator search for the sqlite index session, then sessionator resume on the chosen sid, with the printed re-open line relayed for the user to run.",
+      "expectations": [
+        "A sessionator search is run first to locate the session, with the explicit search verb",
+        "sessionator resume is then run against a session id or unambiguous prefix drawn from the search results",
+        "The re-open line is relayed to the user inside a fenced code block and is explicitly not executed",
+        "No claude --resume or codex resume command is executed directly by the assistant",
+        "Neither sessionator summarize nor sessionator forget is run, since the user asked for neither a fresh summary nor deletion"
+      ]
+    }
+  ]
+}

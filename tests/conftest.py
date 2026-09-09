@@ -129,3 +129,14 @@ def codex_fixtures():
 @pytest.fixture
 def codex_headless_fixtures():
     return FIXTURES / "codex_headless"
+
+
+@pytest.fixture
+def codex_desktop_fixtures():
+    return FIXTURES / "codex_desktop"
+
+
+@pytest.fixture
+def codex_current_fixtures():
+    """A rollout in the *current* codex-cli format (0.15x, desktop + CLI)."""
+    return FIXTURES / "codex_current"

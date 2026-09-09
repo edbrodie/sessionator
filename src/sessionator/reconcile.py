@@ -13,9 +13,17 @@ The inline pass is fast and never calls an LLM:
    whose (mtime, size) is unchanged since last seen is skipped. New/changed files
    are extracted deterministically.
 3. Upsert — filtered sessions (extract returns None), excluded cwds, and
-   tombstoned sids are recorded in the watermark but not stored. A changed known
-   session is rebuilt and its summary marked ``stale``; a new one is ``pending``.
+   tombstoned sids are recorded in the watermark but not stored. A new session is
+   ``pending``. A changed known session with no segments is marked ``stale`` (the
+   whole record is re-summarized); one that already carries segments instead gets
+   a debounced segment cut over just the turns that grew, and its state becomes
+   the segment rollup — re-summarizing a long session from scratch on every
+   keystroke is exactly what segments exist to avoid.
 4. Kick the detached, self-terminating backfill (subprocess, never waited on).
+
+``reconcile_one`` is the same pass narrowed to a single transcript: a hook says
+"this session just compacted / ended", and one extraction plus one forced segment
+cut follows. It shares Phase B with the full sweep via ``_commit``.
 
 The store/watermark mutation runs under the store-write lock; extraction runs
 outside it.
@@ -28,10 +36,14 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .adapters import ADAPTERS
+from pathlib import Path
+
+from . import segments as seg
+from .adapters import ADAPTERS, adapter_for_path
 from .locking import FileLock, LockBusy
 from .privacy import cwd_excluded, scrub_files, scrub_text
-from .store import Store
+from .schema import split_sid
+from .store import Store, watermark_key
 
 
 @dataclass
@@ -47,10 +59,14 @@ class ReconcileResult:
     scrubbed: int = 0
     by_harness: dict = None
     parse_warnings: int = 0
+    # sids upserted by this pass, in order — what a hook worker must summarize.
+    touched_sids: list = None
 
     def __post_init__(self):
         if self.by_harness is None:
             self.by_harness = {}
+        if self.touched_sids is None:
+            self.touched_sids = []
 
 
 def _now_iso() -> str:
@@ -75,6 +91,21 @@ def _scrub_stored_record(store, rec, globs) -> bool:
             rec.excerpt = new_body
             rec.excerpt_path = store.write_excerpt(rec)
             changed = True
+
+    # Segment sidecars hold slices of the same text, so they need the same
+    # redaction — an excluded path must appear in no derived file at all.
+    for path in store.segment_sidecars(rec.sid):
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        new_text, n = scrub_text(text, globs)
+        if n:
+            try:
+                path.write_text(new_text, encoding="utf-8")
+            except OSError:
+                continue
+            changed = True
     return changed
 
 
@@ -91,11 +122,15 @@ def reconcile(config, *, kick_backfill: bool = True) -> ReconcileResult:
         for root in adapter.discover_sources(config):
             for path, mtime, size in adapter.enumerate_sessions(root):
                 result.scanned += 1
-                key = str(path)
+                key = watermark_key(adapter, path)
                 prev = watermarks.get(key)
-                if prev == [mtime, size]:
-                    continue  # unchanged since last seen
                 new_watermarks[key] = [mtime, size]
+                if isinstance(prev, list) and len(prev) >= 2 and prev[1] == size:
+                    # Size, not (mtime, size): archiving a Codex thread moves the
+                    # rollout, which changes its mtime and its path while the
+                    # bytes stay identical. Transcripts only ever grow, so an
+                    # unchanged size means unchanged content.
+                    continue
                 try:
                     rec = adapter.extract(path, config)
                 except Exception:
@@ -109,7 +144,81 @@ def reconcile(config, *, kick_backfill: bool = True) -> ReconcileResult:
                 result.parse_warnings += rec.parse_warnings
                 extracted.append(rec)
 
-    # Phase B (under lock): purge + upsert + persist.
+    records = _commit(config, store, extracted, new_watermarks, tombstones, result)
+    _refresh_index(config, records)
+
+    if kick_backfill:
+        kick_detached_backfill(config)
+    return result
+
+
+def reconcile_one(
+    config, path, *, sid: str | None = None, event: str | None = None,
+    trigger: str | None = None,
+) -> ReconcileResult:
+    """Reconcile exactly one transcript and cut a segment at its current end.
+
+    This is the hook path: something just happened to one session (a compaction,
+    a session end), and re-scanning every transcript to find out would blow the
+    hook's sub-second budget. ``event``/``trigger`` label the segment; the cut is
+    forced, because a hook firing IS the user-visible moment worth summarizing.
+    No backfill is kicked — the caller decides when to summarize which sid.
+    """
+    store = Store(config)
+    result = ReconcileResult()
+    p = Path(path)
+    adapter = adapter_for_path(config, p) or _adapter_for_sid(sid)
+    if adapter is None:
+        return result
+
+    result.scanned += 1
+    try:
+        st = p.stat()
+    except OSError:
+        return result
+    try:
+        rec = adapter.extract(p, config)
+    except Exception:
+        result.filtered += 1
+        return result
+    if rec is None:
+        result.filtered += 1
+        return result
+    result.extracted += 1
+    result.parse_warnings += rec.parse_warnings
+
+    watermarks = store.load_watermarks()
+    watermarks[watermark_key(adapter, p)] = [st.st_mtime, st.st_size]
+    records = _commit(
+        config, store, [rec], watermarks, store.load_tombstones(), result,
+        event=event, trigger=trigger,
+    )
+    _refresh_index(config, records)
+    return result
+
+
+def _adapter_for_sid(sid: str | None):
+    """Fallback resolver for a caller that knows the sid but whose transcript
+    path ``adapter_for_path`` does not recognize (a relocated transcript, a
+    harness laying files out unusually). The path is still authoritative when it
+    is recognizable — the sid only fills the gap."""
+    if not sid:
+        return None
+    try:
+        harness = split_sid(sid)[0]
+    except ValueError:
+        return None
+    return ADAPTERS.get(harness)
+
+
+def _commit(
+    config, store, extracted, watermarks, tombstones, result, *,
+    event: str | None = None, trigger: str | None = None,
+):
+    """Phase B, shared by the full sweep and the single-transcript hook path:
+    under the store-write lock, purge excluded records, upsert the freshly
+    extracted ones (cutting segments as needed), and persist store + watermarks.
+    Returns the written records so the caller can refresh the index."""
     try:
         lock = FileLock(str(config.store_lock_path), blocking=True, timeout=600).acquire()
     except LockBusy:
@@ -163,25 +272,32 @@ def reconcile(config, *, kick_backfill: bool = True) -> ReconcileResult:
             rec.indexed_at = _now_iso()
             if existing is not None:
                 # Rebuild-on-change: keep the (possibly outdated) summary visible
-                # but mark it stale so the backfill re-summarizes it.
+                # and carry the segment trail over from the stored record.
                 rec.summary = existing.summary
-                rec.summary_state = "stale"
+                rec.summary_segments = existing.summary_segments
+                rec.summary_state = existing.summary_state
+                rec.client = rec.client or existing.client
                 result.upserted_changed += 1
             else:
                 result.upserted_new += 1
+            _cut_segments(store, rec, event=event, trigger=trigger)
             rec.excerpt_path = store.write_excerpt(rec)
             records[rec.sid] = rec
+            result.touched_sids.append(rec.sid)
             result.by_harness[rec.harness] = result.by_harness.get(rec.harness, 0) + 1
 
         store.write(records)
-        store.write_watermarks(new_watermarks)
+        store.write_watermarks(watermarks)
         store.write_applied_exclusions(config.exclusions)
+        return records
     finally:
         lock.release()
 
-    # Refresh the derived index from the just-written store. It is disposable and
-    # unlocked, so a failure here never fails the reconcile — a later query's
-    # ensure_current will rebuild it.
+
+def _refresh_index(config, records) -> None:
+    """Refresh the derived index from the just-written store. It is disposable
+    and unlocked, so a failure here never fails the reconcile — a later query's
+    ensure_current will rebuild it."""
     try:
         from .index import Index
 
@@ -189,21 +305,101 @@ def reconcile(config, *, kick_backfill: bool = True) -> ReconcileResult:
     except Exception:
         pass
 
-    if kick_backfill:
-        kick_detached_backfill(config)
-    return result
+
+def _cut_segments(store, rec, *, event, trigger) -> None:
+    """Decide which summary segments this upsert opens, and set the record's
+    summary_state accordingly.
+
+    Three cases, in order:
+
+    * the transcript carries its own cut points (Codex ``compacted`` lines) that
+      no segment covers yet — replay them, then close the tail, so a session no
+      hook ever saw still gets incremental summaries;
+    * a hook told us what just happened — force one cut labelled with it;
+    * the transcript merely grew — cut the new turns only, debounced, and only
+      for a record that already has segments. A record with none stays on the
+      legacy whole-record path (``stale``), which is also what keeps a plain
+      ``ingest`` from opening any segment at all.
+    """
+    size = transcript_size(rec)
+    turns = rec.turn_count or seg.count_turns(rec.excerpt)
+    had_segments = bool(rec.summary_segments)
+    cut = []
+
+    replayed = seg.apply_boundaries(
+        rec, rec.boundaries, turn_count=turns, size=size,
+    )
+    cut += replayed
+
+    if event:
+        forced = seg.append_segment(
+            rec, event=event, trigger=trigger, turn_count=turns, size=size,
+            force=True,
+        )
+        if forced:
+            cut.append(forced)
+    elif replayed:
+        # Close the tail after the last replayed marker, or it would only ever be
+        # summarized if the (possibly finished) session grew again.
+        tail = seg.append_segment(
+            rec, event="change", trigger=None, turn_count=turns, size=size,
+            force=True,
+        )
+        if tail:
+            cut.append(tail)
+    elif had_segments and size > seg.last_bytes(rec.summary_segments):
+        grown = seg.append_segment(
+            rec, event="change", trigger=None, turn_count=turns, size=size,
+            min_turns=seg.MIN_CHANGE_TURNS,
+        )
+        if grown:
+            cut.append(grown)
+
+    for s in cut:
+        _write_segment_sidecar(store, rec, s)
+
+    if rec.summary_segments:
+        rec.summary_state = seg.rollup_state(rec)
+    elif rec.summary_state == "done":
+        # Legacy whole-record path: the record changed, so its summary is stale.
+        rec.summary_state = "stale"
 
 
-def kick_detached_backfill(config) -> None:
+def _write_segment_sidecar(store, rec, segment) -> None:
+    """Persist the slice this segment covers while the untrimmed turns are still
+    in hand — by summarizer time the stored excerpt may be middle-trimmed."""
+    source = rec.excerpt_full or rec.excerpt
+    text = seg.slice_turns(seg.split_turns(source), segment["start"], segment["end"])
+    if text:
+        store.write_segment_excerpt(rec, segment["seq"], text)
+
+
+def transcript_size(rec) -> int:
+    """The transcript's size right now — the growth marker a segment records."""
+    if not rec.transcript_path:
+        return 0
+    try:
+        return Path(rec.transcript_path).stat().st_size
+    except OSError:
+        return 0
+
+
+def kick_detached_backfill(config, only_sid: str | None = None) -> None:
     """Spawn a detached, self-terminating backfill and return immediately. Any
-    failure to spawn is swallowed — summaries are best-effort."""
+    failure to spawn is swallowed — summaries are best-effort. ``only_sid``
+    narrows the pass to one session (the hook path, which knows exactly which
+    session just changed and must not pay for a store-wide sweep)."""
     try:
         logf = open(config.backfill_log_path, "a")
     except OSError:
         logf = subprocess.DEVNULL
+    args = [sys.executable, "-m", "sessionator", "_backfill"]
+    if only_sid:
+        args.append("--sid")
+        args.append(only_sid)
     try:
         subprocess.Popen(
-            [sys.executable, "-m", "sessionator", "_backfill"],
+            args,
             stdin=subprocess.DEVNULL,
             stdout=logf,
             stderr=logf,

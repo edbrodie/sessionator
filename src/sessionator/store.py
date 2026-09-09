@@ -6,8 +6,17 @@ Layout under the data dir:
   atomically (temp + ``os.replace``), sorted (date desc, last_active desc).
 * ``transcripts/<harness>-<uuid>.md`` — the capped, private-stripped excerpt
   sidecar, pruning-proof (``show`` falls back to it).
-* ``watermarks.json`` — ``{transcript_path: [mtime, size]}`` for the reconcile
-  scan.
+* ``transcripts/<harness>-<uuid>.seg<seq>.md`` — one per summary segment: the
+  slice of the excerpt that cut covered, written at cut time. It exists because
+  the main excerpt is middle-trimmed at 36k, and the sessions that compact are
+  exactly the long ones whose middle would be gone by the time the summarizer
+  ran; the sidecar preserves the slice verbatim (capped for the LLM).
+* ``watermarks.json`` — ``{"schema": 2, "entries": {key: [mtime, size]}}`` for
+  the reconcile scan. The key is the adapter's stable identity for a transcript
+  (``codex:<uuid>``, ``claude:<stem>``), not its path: Codex archives a thread by
+  **moving** its rollout, and a path-keyed watermark reads that move as a new
+  transcript and re-extracts the whole session. Schema-1 files (path-keyed, no
+  wrapper) are migrated on load.
 * ``tombstones.json`` — a list of sids that ``forget`` has retired; reconcile
   never re-ingests them.
 * ``scrub_state.json`` — the exclusion globs last applied by a retroactive
@@ -23,7 +32,11 @@ import json
 import os
 from pathlib import Path
 
+from .adapters import adapter_for_path
 from .schema import Record, split_sid
+from .segments import INPUT_CAP, cap_text
+
+WATERMARK_SCHEMA = 2
 
 
 class Store:
@@ -86,27 +99,81 @@ class Store:
         os.replace(tmp, path)
         return str(path)
 
+    # --- per-segment excerpt sidecars ------------------------------------
+    def segment_excerpt_path_for(self, sid: str, seq: int) -> Path:
+        harness, uuid = split_sid(sid)
+        return self.transcripts_dir / f"{harness}-{uuid}.seg{int(seq)}.md"
+
+    def write_segment_excerpt(self, rec: Record, seq: int, text: str) -> str | None:
+        """Persist one segment's slice of the excerpt, capped to the summarizer
+        input budget. Returns the path, or None when the slice is empty."""
+        if not text or not text.strip():
+            return None
+        self.transcripts_dir.mkdir(parents=True, exist_ok=True)
+        path = self.segment_excerpt_path_for(rec.sid, seq)
+        tmp = path.with_suffix(".md.tmp")
+        header = f"# {rec.sid} seg{int(seq)}\n\n_{rec.harness} · {rec.date}_\n\n---\n\n"
+        tmp.write_text(header + cap_text(text, INPUT_CAP) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+        return str(path)
+
+    def read_segment_excerpt(self, rec: Record, seq: int) -> str:
+        """The segment slice written at cut time, or '' when absent (the caller
+        then re-slices the main excerpt)."""
+        return _read_sidecar(self.segment_excerpt_path_for(rec.sid, seq))
+
+    def segment_sidecars(self, sid: str):
+        """Every segment sidecar of ``sid`` (used by delete and by the scrub)."""
+        try:
+            harness, uuid = split_sid(sid)
+        except ValueError:
+            return []
+        return sorted(self.transcripts_dir.glob(f"{harness}-{uuid}.seg*.md"))
+
     def read_excerpt(self, rec: Record) -> str:
         """Return the excerpt body (without the sidecar header), or ''."""
         p = Path(rec.excerpt_path) if rec.excerpt_path else self.excerpt_path_for(rec.sid)
-        if not p.exists():
-            return ""
-        text = p.read_text(errors="replace")
-        _, sep, body = text.partition("\n---\n\n")
-        return body if sep else text
+        return _read_sidecar(p)
 
     def delete_excerpt(self, sid: str) -> None:
-        try:
-            self.excerpt_path_for(sid).unlink()
-        except (OSError, ValueError):
-            pass
+        """Drop the excerpt sidecar and every segment sidecar of ``sid`` — a
+        forgotten session must leave no derived text behind."""
+        for p in [self.excerpt_path_for(sid), *self.segment_sidecars(sid)]:
+            try:
+                p.unlink()
+            except (OSError, ValueError):
+                pass
 
     # --- watermarks ------------------------------------------------------
     def load_watermarks(self) -> dict:
-        return _load_json(self.watermarks_path, default={})
+        """The ``{key: [mtime, size]}`` entries, migrating a v1 file in passing.
+        Returns the entries alone — the schema wrapper is this module's business,
+        not the reconcile's."""
+        data = _load_json(self.watermarks_path, default={})
+        if not isinstance(data, dict):
+            return {}
+        if data.get("schema") == WATERMARK_SCHEMA:
+            entries = data.get("entries")
+            return entries if isinstance(entries, dict) else {}
+        return self._migrate_watermarks(data)
+
+    def _migrate_watermarks(self, v1: dict) -> dict:
+        """v1 keyed every entry on the transcript path. Re-key each one through
+        the owning adapter so the history survives; a path no adapter recognizes
+        keeps a ``path:`` key, which is exactly what it meant before. Nothing is
+        written here — the next reconcile persists the v2 file."""
+        out = {}
+        for key, value in v1.items():
+            if not isinstance(key, str):
+                continue
+            adapter = adapter_for_path(self.config, key)
+            out[watermark_key(adapter, key)] = value
+        return out
 
     def write_watermarks(self, wm: dict) -> None:
-        _dump_json(self.watermarks_path, wm)
+        _dump_json(
+            self.watermarks_path, {"schema": WATERMARK_SCHEMA, "entries": wm}
+        )
 
     # --- tombstones ------------------------------------------------------
     def load_tombstones(self) -> set[str]:
@@ -131,6 +198,34 @@ class Store:
 
     def write_applied_exclusions(self, globs) -> None:
         _dump_json(self.scrub_state_path, {"exclusions": sorted(set(globs or []))})
+
+
+def watermark_key(adapter, path) -> str:
+    """The watermark key for ``path`` under ``adapter``.
+
+    ``watermark_key`` is the optional fifth adapter function: an adapter that
+    knows a path-independent identity for its transcripts declares it, and gets
+    move-tolerance for free. One that does not falls back to ``path:<path>``,
+    which is the v1 behaviour.
+    """
+    fn = getattr(adapter, "watermark_key", None)
+    if callable(fn):
+        try:
+            key = fn(path)
+        except Exception:
+            key = None
+        if isinstance(key, str) and key:
+            return key
+    return f"path:{path}"
+
+
+def _read_sidecar(path: Path) -> str:
+    """A sidecar's body, without the ``# sid … ---`` header, or ''."""
+    if not path.exists():
+        return ""
+    text = path.read_text(errors="replace")
+    _, sep, body = text.partition("\n---\n\n")
+    return body if sep else text
 
 
 def _load_json(path: Path, default):

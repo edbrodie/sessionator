@@ -18,13 +18,24 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 
-# Shipped summarizer defaults (T-005): same-harness CLI, per-harness model/effort.
+# Shipped summarizer defaults (T-005): per-harness model/effort. Summaries are
+# small, frequent, and per-segment, so the default is the cheapest capable model.
 DEFAULT_SUMMARIZE = {
-    "claude": {"model": "opus-4.8", "effort": "medium"},
+    "claude": {"model": "haiku", "effort": "medium"},
     "codex": {"model": "gpt-5.6-luna", "reasoning": "high"},
 }
+
+# Which CLI summarizes, regardless of the session's own harness: "claude" |
+# "codex" | "same" (the pre-v2 behaviour of preferring the session's harness).
+# Default "claude" so a cheap Haiku call summarizes Codex sessions too.
+PREFER_VALUES = ("claude", "codex", "same")
+DEFAULT_PREFER = "claude"
+
+# v1 shipped this Claude model default; a config still carrying it is using the
+# shipped value, not a user choice, so the v2 migration may replace it.
+_V1_CLAUDE_MODEL = "opus-4.8"
 
 # Code default is empty: a public tool ships no machine-specific exclusions. A
 # user (or an operator setting up a machine with a local-only vault) adds globs
@@ -78,6 +89,7 @@ class Config:
     sources: dict[str, Source]
     summarize: dict[str, dict]
     path: Path
+    summarize_prefer: str = DEFAULT_PREFER
     first_run: bool = False
     detection_notes: list[str] = field(default_factory=list)
 
@@ -115,10 +127,18 @@ class Config:
         return self.data_dir / "backfill.log"
 
     def summarizer_cli(self, harness: str) -> tuple[str, str] | None:
-        """The CLI to summarize a session of ``harness``: prefer the same-harness
-        CLI, fall back to the other. Returns ``(harness_of_cli, cli_path)`` or
-        None if no CLI is installed."""
-        order = [harness] + [h for h in ("claude", "codex") if h != harness]
+        """The CLI to summarize a session of ``harness``: try the configured
+        ``[summarize].prefer`` CLI first (``same`` = the session's own harness),
+        then the rest. Returns ``(harness_of_cli, cli_path)`` or None if no CLI
+        is installed."""
+        prefer = self.summarize_prefer
+        if prefer not in PREFER_VALUES:
+            prefer = DEFAULT_PREFER
+        wanted = [harness] if prefer == "same" else [prefer, harness]
+        order = []
+        for h in wanted + ["claude", "codex"]:
+            if h not in order:
+                order.append(h)
         for h in order:
             src = self.sources.get(h)
             if src and src.cli:
@@ -179,6 +199,12 @@ def _render_toml(cfg: Config) -> str:
         else:
             lines.append("# cli = \"\"  # not detected on PATH")
         lines.append("")
+    lines += [
+        "[summarize]",
+        "# Which CLI summarizes: claude | codex | same (the session's own harness).",
+        f'prefer = "{_toml_escape(cfg.summarize_prefer)}"',
+        "",
+    ]
     for name in ("claude", "codex"):
         s = cfg.summarize.get(name, DEFAULT_SUMMARIZE[name])
         lines.append(f"[summarize.{name}]")
@@ -214,13 +240,31 @@ def _parse(raw: dict, path: Path) -> Config:
     for name in ("claude", "codex"):
         summarize[name] = dict(DEFAULT_SUMMARIZE[name])
         summarize[name].update(raw_sum.get(name) or {})
+    prefer = raw_sum.get("prefer")
+    if prefer not in PREFER_VALUES:
+        prefer = DEFAULT_PREFER
     return Config(
         data_dir=data_dir,
         exclusions=exclusions,
         sources=sources,
         summarize=summarize,
         path=path,
+        summarize_prefer=prefer,
     )
+
+
+def _migrate(cfg: Config, raw: dict) -> bool:
+    """Upgrade an older on-disk config in memory; True when it must be rewritten.
+
+    Only the *shipped* v1 model default is replaced — a model the user chose is
+    never overwritten. The rewrite also stamps the new schema_version so the
+    migration runs once.
+    """
+    if int(raw.get("schema_version") or 1) >= CONFIG_SCHEMA_VERSION:
+        return False
+    if (cfg.summarize.get("claude") or {}).get("model") == _V1_CLAUDE_MODEL:
+        cfg.summarize["claude"]["model"] = DEFAULT_SUMMARIZE["claude"]["model"]
+    return True
 
 
 def load(*, auto_write: bool = True) -> Config:
@@ -231,7 +275,13 @@ def load(*, auto_write: bool = True) -> Config:
     if path.exists():
         with open(path, "rb") as f:
             raw = tomllib.load(f)
-        return _parse(raw, path)
+        cfg = _parse(raw, path)
+        if _migrate(cfg, raw):
+            try:
+                _write_config(cfg)
+            except OSError:  # read-only config dir: run with the migrated values
+                pass
+        return cfg
 
     # First run: detect, build, (optionally) write.
     sources, notes = _detect()
