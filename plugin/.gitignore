@@ -1,2 +1,3 @@
 .claude/*.local.md
 .claude/*.local.json
+evals/results/

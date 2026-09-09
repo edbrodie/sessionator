@@ -1,0 +1,22 @@
+[
+  {"query": "when did i work on the bubble charts? it was some d3 thing in the analytics repo but i cant remember if it was last month or the one before", "should_trigger": true},
+  {"query": "find that session where i broke the alembic migration and had to hand-edit the version table, i think it was in the 1kx-portal repo", "should_trigger": true},
+  {"query": "did i already do the sqlite fts index thing for sessionator or am i imagining it? feels like i spent a whole evening on it", "should_trigger": true},
+  {"query": "which of my past claude sessions touched packages/ui/src/Button.tsx", "should_trigger": true},
+  {"query": "resume that session from tuesday where we were wiring up the affinity webhook", "should_trigger": true},
+  {"query": "pick up where i left off yesterday on the cot-bot refactor, i want to keep going from where the todo list ended", "should_trigger": true},
+  {"query": "check my session history for anything i left unfinished in the last two weeks across claude and codex", "should_trigger": true},
+  {"query": "whats that codex run where i was debugging the auth middleware timeout, i want the resume command for it", "should_trigger": true},
+  {"query": "i had claude do something with grafana dashboards for the big-numbers project a while back, when was that and what did it end up doing", "should_trigger": true},
+  {"query": "waht did i do last thursady in the website repo, i think it was the sitemap thing", "should_trigger": true},
+  {"query": "what does git log say i changed in src/sessionator/index.py last week", "should_trigger": false},
+  {"query": "resume the download that stopped at 80%, the curl command timed out", "should_trigger": false},
+  {"query": "summarize what we've talked about in this conversation so far before i compact", "should_trigger": false},
+  {"query": "what did you just tell me about the index design two messages ago", "should_trigger": false},
+  {"query": "is that background pytest task still running or did it finish", "should_trigger": false},
+  {"query": "how do i see my chat history in the codex desktop app, is there a sidebar for old threads", "should_trigger": false},
+  {"query": "search the codebase for where sessions are serialized to jsonl and show me the writer", "should_trigger": false},
+  {"query": "restore the config file i deleted earlier in this session, i think you have the old contents", "should_trigger": false},
+  {"query": "what tmux sessions are open right now on this machine", "should_trigger": false},
+  {"query": "show me the commit that touched src/sessionator/index.py and added the FTS5 table", "should_trigger": false}
+]
