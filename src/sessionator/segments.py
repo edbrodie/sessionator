@@ -24,6 +24,10 @@ from datetime import datetime, timezone
 from .schema import SUMMARY_FIELDS, empty_summary
 
 INPUT_CAP = 6000  # chars of one session/segment fed to the summarizer
+# Growth-only cuts (no hook event) wait for at least this many new turns. A
+# reconcile runs before every query, so without a floor a live session would
+# earn one summarizer call per query while it is still being typed into.
+MIN_CHANGE_TURNS = 4
 
 # Excerpt turns are written as ``"USER: …"`` / ``"ASSISTANT: …"`` blocks joined
 # by a blank line; a turn's own text may contain blank lines, so turns are found
@@ -119,7 +123,8 @@ def make_segment(*, seq, event, trigger, start, end, size, at=None) -> dict:
 
 
 def append_segment(
-    rec, *, event, trigger=None, turn_count, size, at=None, force=False
+    rec, *, event, trigger=None, turn_count, size, at=None, force=False,
+    min_turns=0,
 ) -> dict | None:
     """Cut a new segment covering ``[last_end, turn_count)`` and append it.
 
@@ -128,12 +133,16 @@ def append_segment(
     session into one LLM call per keystroke-sized growth, so it is skipped unless
     ``force`` (the user asking for a summary now). A forced cut with nothing new
     re-covers the whole excerpt rather than producing an empty segment.
+    ``min_turns`` skips a cut that would cover fewer new turns than that (a
+    forced cut ignores it).
     """
     segments = rec.summary_segments or []
     if pending(segments) and not force:
         return None
     start = last_end(segments)
     end = int(turn_count)
+    if not force and end - start < int(min_turns or 0):
+        return None
     if start >= end:
         if not force:
             return None

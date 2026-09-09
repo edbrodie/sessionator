@@ -241,8 +241,8 @@ def test_growth_on_segmented_record_cuts_one_debounced_segment(tmp_path):
     store.write(records)
     first_end = rec.summary_segments[0]["end"]
 
-    # Growth cuts exactly the new turns and shows as partial.
-    _grow_and_reconcile(cfg, path, _claude_lines(1, day="2026-07-02"))
+    # Growth past the floor cuts exactly the new turns and shows as partial.
+    _grow_and_reconcile(cfg, path, _claude_lines(2, day="2026-07-02"))
     rec = store.load()[SID]
     assert len(rec.summary_segments) == 2
     new = rec.summary_segments[1]
@@ -257,6 +257,38 @@ def test_growth_on_segmented_record_cuts_one_debounced_segment(tmp_path):
     _grow_and_reconcile(cfg, path, _claude_lines(1, day="2026-07-03"))
     rec = store.load()[SID]
     assert len(rec.summary_segments) == 2
+    assert rec.summary_state == "partial"
+
+
+def test_small_growth_on_segmented_record_waits_for_the_floor(tmp_path):
+    """A reconcile runs before every query; a couple of new turns on a live
+    session must not open a segment (and a summarizer call) each time."""
+    path = _write_claude(tmp_path, UUID, _claude_lines(2))
+    cfg = make_config(tmp_path, claude_dir=tmp_path / "claude")
+    reconcile(cfg, kick_backfill=False)
+    store = Store(cfg)
+    records = store.load()
+    rec = records[SID]
+    seg.append_segment(
+        rec, event="precompact", trigger="auto",
+        turn_count=seg.count_turns(store.read_excerpt(rec)),
+        size=path.stat().st_size,
+    )
+    seg.mark_done(rec, 1, {"asked": "earlier work"})
+    rec.summary_state = "done"
+    store.write(records)
+
+    # One exchange (2 turns) is below MIN_CHANGE_TURNS: no cut, still done.
+    _grow_and_reconcile(cfg, path, _claude_lines(1, day="2026-07-02"))
+    rec = store.load()[SID]
+    assert len(rec.summary_segments) == 1
+    assert rec.summary_state == "done"
+
+    # Once enough has accumulated, the cut covers everything since the last end.
+    _grow_and_reconcile(cfg, path, _claude_lines(1, day="2026-07-03"))
+    rec = store.load()[SID]
+    assert len(rec.summary_segments) == 2
+    assert rec.summary_segments[1]["end"] - rec.summary_segments[1]["start"] >= seg.MIN_CHANGE_TURNS
     assert rec.summary_state == "partial"
 
 

@@ -350,6 +350,7 @@ def _cut_segments(store, rec, *, event, trigger) -> None:
     elif had_segments and size > seg.last_bytes(rec.summary_segments):
         grown = seg.append_segment(
             rec, event="change", trigger=None, turn_count=turns, size=size,
+            min_turns=seg.MIN_CHANGE_TURNS,
         )
         if grown:
             cut.append(grown)
