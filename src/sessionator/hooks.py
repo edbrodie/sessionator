@@ -35,6 +35,10 @@ import time
 from pathlib import Path
 
 # Harness hook_event_name -> the segment ``event`` vocabulary (schema.py).
+# A worker is detached, so it can afford to wait for a running sweep to finish
+# rather than drop its segment on the floor.
+WORKER_BACKFILL_WAIT = 1800.0
+
 EVENT_MAP = {
     "PreCompact": "precompact",
     "PostCompact": "postcompact",
@@ -205,7 +209,7 @@ def _handle(config, payload: dict) -> None:
 
         for sid in result.touched_sids:
             try:
-                backfill(config, only_sid=sid)
+                backfill(config, only_sid=sid, wait=WORKER_BACKFILL_WAIT)
             except Exception:
                 continue
     finally:

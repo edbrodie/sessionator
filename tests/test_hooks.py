@@ -313,3 +313,21 @@ def test_worker_reaps_stale_spool_files(worker_env):
 
 def test_reap_ignores_a_missing_directory(tmp_path):
     assert hooks._reap_stale_spool(tmp_path / "nope") == 0
+
+
+def test_backfill_wait_blocks_on_running_sweep_then_runs(tmp_path, monkeypatch):
+    """A hook worker waits for the single-instance lock instead of yielding."""
+    from sessionator import summarize
+    from sessionator.locking import FileLock
+    from conftest import make_config
+
+    cfg = make_config(tmp_path)
+    held = FileLock(str(cfg.backfill_lock_path), blocking=False).acquire()
+    # Non-waiting call yields immediately.
+    assert summarize.backfill(cfg).get("already_running") is True
+    # A short wait times out into the same yield, never raises.
+    assert summarize.backfill(cfg, wait=0.2).get("already_running") is True
+    held.release()
+    # With the lock free, the waiting call runs a (work-less) pass.
+    stats = summarize.backfill(cfg, wait=0.2)
+    assert "already_running" not in stats

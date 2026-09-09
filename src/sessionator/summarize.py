@@ -82,11 +82,15 @@ class _Work:
 
 def backfill(
     config: Config | None = None, *, max_batches: int | None = None,
-    only_sid: str | None = None,
+    only_sid: str | None = None, wait: float | None = None,
 ) -> dict:
     """Run one backfill pass. Returns a small stats dict. Never raises for
     summarizer failures. ``only_sid`` restricts the pass to one session — the
-    hook path, which knows what just changed and must not sweep the store."""
+    hook path, which knows what just changed and must not sweep the store.
+    ``wait`` makes the single-instance guard block up to that many seconds
+    instead of yielding: a detached hook worker would otherwise lose its one
+    segment to whatever sweep happens to be running and leave it pending until
+    the next kick."""
     if config is None:
         config = load_config()
     store = Store(config)
@@ -97,7 +101,12 @@ def backfill(
 
     # Single-instance guard.
     try:
-        inst_lock = FileLock(str(config.backfill_lock_path), blocking=False).acquire()
+        if wait:
+            inst_lock = FileLock(
+                str(config.backfill_lock_path), blocking=True, timeout=float(wait),
+            ).acquire()
+        else:
+            inst_lock = FileLock(str(config.backfill_lock_path), blocking=False).acquire()
     except LockBusy:
         stats["already_running"] = True
         return stats
