@@ -30,7 +30,7 @@ from . import __version__
 # ``convert-legacy`` is a hidden one-time migration verb (absent from help).
 _COMMANDS = (
     "search", "show", "resume", "ingest", "status", "forget", "summarize",
-    "_backfill", "_hook_worker", "convert-legacy",
+    "setup", "_backfill", "_hook_worker", "convert-legacy",
 )
 
 
@@ -74,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_backfill(rest)
     if command == "_hook_worker":
         return _cmd_hook_worker(rest)
+    if command == "setup":
+        return _cmd_setup(rest)
     if command == "forget":
         return _cmd_forget(rest)
     if command == "summarize":
@@ -95,6 +97,8 @@ def _print_top_help() -> None:
         "       sessionator forget <sid|cwd-glob>   retire session(s): delete +\n"
         "                                           tombstone so ingest won't re-add\n"
         "       sessionator summarize <sid-prefix>  summarize one session now\n"
+        "       sessionator setup codex|status      install Codex capture hooks,\n"
+        "                                           or report how capture is wired\n"
         "\nfilters: --keyword --repo --cwd --model --harness --since --until "
         "--resolved --limit --format {compact,full,ndjson}\n"
         "privacy: config [exclusions].cwd_globs removes matching sessions (retro-\n"
@@ -555,6 +559,161 @@ def _cmd_backfill(argv: list[str]) -> int:
         f"errors {stats.get('errors', 0)}"
         + (" (already running)" if stats.get("already_running") else "")
     )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# setup — install the Codex hooks, or report how capture is wired
+# ---------------------------------------------------------------------------
+
+def _cmd_setup(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        prog="sessionator setup",
+        description="Install the Codex capture hooks, or report capture status.",
+    )
+    ap.add_argument(
+        "target",
+        choices=["codex", "status"],
+        help="codex: merge the hooks into $CODEX_HOME/hooks.json; "
+        "status: report how capture is wired up on this machine",
+    )
+    ap.add_argument(
+        "--remove", action="store_true", help="remove our hooks instead (codex)"
+    )
+    ap.add_argument(
+        "--dry-run", action="store_true", help="print the change, write nothing"
+    )
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as e:
+        return int(e.code) if e.code else 0
+
+    # setup deliberately does NOT reconcile: it is a machine-configuration verb,
+    # and making it scan every transcript first would be a surprise.
+    if args.target == "status":
+        return _setup_status()
+    return _setup_codex(remove=args.remove, dry_run=args.dry_run)
+
+
+def _setup_codex(*, remove: bool, dry_run: bool) -> int:
+    from . import setup_hooks as sh
+
+    path = sh.hooks_path()
+    try:
+        cli_path = sh.resolve_cli()
+        command = sh.hook_command(cli_path)
+        existing = sh.read_hooks(path)
+    except sh.SetupError as e:
+        print(f"setup error: {e}", file=sys.stderr)
+        return 2
+
+    if remove:
+        if existing is None:
+            print(f"nothing to remove — {path} does not exist")
+            return 0
+        result = sh.unmerge(existing, command)
+        if not result.changed:
+            print(f"nothing to remove — no sessionator hooks in {path}")
+            return 0
+        delete = sh.is_empty(result.data)
+        for line in result.changes:
+            print(f"  {line}")
+        if dry_run:
+            print(
+                f"(dry-run) would {'delete' if delete else 'rewrite'} {path}; "
+                "nothing was written"
+            )
+            if not delete:
+                print(sh.render(result.data))
+            return 0
+        try:
+            if delete:
+                path.unlink()
+                print(f"removed {path} (nothing else was in it)")
+            else:
+                sh.write_hooks(path, result.data)
+                print(f"updated {path}")
+        except OSError as e:
+            print(f"setup error: cannot write {path}: {e}", file=sys.stderr)
+            return 2
+        print("Your own hooks in config.toml were not touched.")
+        return 0
+
+    result = sh.merge(existing, command)
+    print(f"sessionator hook command: {command}")
+    if not result.changed:
+        print(f"{path} is already up to date — nothing written")
+        return 0
+    for line in result.changes:
+        print(f"  {line}")
+    if dry_run:
+        print(f"(dry-run) would write {path}:")
+        print(sh.render(result.data))
+        return 0
+    try:
+        sh.write_hooks(path, result.data)
+    except OSError as e:
+        print(f"setup error: cannot write {path}: {e}", file=sys.stderr)
+        return 2
+    print(f"wrote {path}")
+    print(sh.TRUST_INSTRUCTIONS)
+    return 0
+
+
+def _setup_status() -> int:
+    from . import setup_hooks as sh
+
+    try:
+        cfg = _load_config_verbose()
+    except Exception as e:  # pragma: no cover - defensive top-level
+        print(f"setup status error: {e}", file=sys.stderr)
+        return 2
+
+    print("sessionator capture status")
+    try:
+        cli_path = sh.resolve_cli()
+        print(f"  cli:        {cli_path}")
+    except sh.SetupError:
+        cli_path = None
+        print("  cli:        not found on PATH (hooks cannot be installed)")
+
+    claude_hits = sh.find_claude_hooks()
+    if claude_hits:
+        print("  claude:     hook found in " + ", ".join(str(p) for p in claude_hits))
+    else:
+        print(
+            "  claude:     no sessionator hook found "
+            "(install the plugin: /plugin install sessionator@sessionator)"
+        )
+
+    path = sh.hooks_path()
+    command = sh.hook_command(cli_path) if cli_path else None
+    try:
+        data = sh.read_hooks(path)
+    except sh.SetupError as e:
+        data = None
+        print(f"  codex:      {path} unreadable — {e.args[0].splitlines()[0]}")
+    else:
+        if data is None:
+            print(f"  codex:      {path} absent (run `sessionator setup codex`)")
+        else:
+            ours = sh.find_ours(data, command) if command else {}
+            if ours:
+                print(f"  codex:      {', '.join(sorted(ours))} in {path}")
+            else:
+                print(f"  codex:      no sessionator hooks in {path}")
+
+    foreign = sh.count_config_toml_hooks()
+    print(
+        f"  config.toml: {foreign} hook table(s) — yours, never read or written "
+        "by setup"
+    )
+    print(f"  spool:      {sh.spool_depth(cfg)} pending payload(s)")
+    models = ", ".join(
+        f"{name} via {(cfg.summarize.get(name) or {}).get('model') or '?'}"
+        for name in ("claude", "codex")
+    )
+    print(f"  summarizer: prefer {cfg.summarize_prefer} · {models}")
     return 0
 
 
