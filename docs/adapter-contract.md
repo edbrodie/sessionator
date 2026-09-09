@@ -71,9 +71,41 @@ persisted record.
    of real Codex usage. `history.jsonl` is never read. Both `sessions/` and
    `archived_sessions/` are scanned, and the watermark is keyed on the rollout
    uuid, so archiving is a move rather than a re-ingest.
-5. **Minimal required fields**: sid, harness, date. Everything else is
+5. **Codex rollout dialects**: the adapter reads *both* the legacy and the
+   current (codex-cli 0.15x, desktop app *and* CLI) line shapes in one walk — a
+   rollout written across a Codex upgrade mixes them.
+
+   | | legacy | current |
+   |---|---|---|
+   | human turn | `event_msg` / `user_message` (`payload.message`) | `response_item` / `message`, `role: "user"`, `content: [{"type":"input_text","text":…}]` |
+   | agent turn | `event_msg` / `agent_message` | `response_item` / `message`, `role: "assistant"`, `content: [{"type":"output_text",…}]` |
+   | shell | `response_item` / `function_call` `exec_command` | `response_item` / `custom_tool_call` `name: "exec"` — a JS script whose `tools.exec_command({cmd: "…"})` calls carry the command; output in `custom_tool_call_output.output` as a list of text parts |
+   | files | `event_msg` / `patch_apply_end` | `event_msg` / `item_completed` with `item.type == "FileChange"` (same `changes` dict) |
+   | mcp / commands / plan / subagents | `mcp_tool_call_end` &c. | `item_completed` items `McpToolCall`, `CommandExecution` (argv, incl. its `stdout` — the login-shell wrapper `["/bin/zsh","-lc",…]` is unwrapped), `Plan`, `CollabAgentToolCall` |
+
+   Three consequences are normative:
+
+   - **Turns are de-duplicated across channels.** `item_completed`
+     `UserMessage` / `AgentMessage` items echo the `response_item` messages, and
+     an upgraded session can carry both channels; the first channel to report a
+     given text wins, and turns are never taken from `item_completed`, whose
+     items lack the authoritative timestamp. A repeat from the *same* channel is
+     kept — a human really can send "wait" twice.
+   - **`user`-role does not mean a human.** Codex writes synthetic user messages
+     — `<environment_context>`, `<user_instructions>`, `<recommended_plugins>`,
+     `<turn_aborted>`, `<in-app-browser-context>`, `<subagent_notification>`,
+     `# AGENTS.md instructions …`. None is a turn: counting them would resurrect
+     every filtered thread as a "session" whose only content is boilerplate.
+     Tag-wrapped text is rejected by `Walker.add_user`; the untagged prefixes
+     live in `codex.INJECTED_USER_PREFIXES`. The `developer` and `system` roles
+     are never turns either.
+   - **A dialect gap is silent.** When turns moved to `response_item` messages,
+     `finish()` returned `None` for every 0.15x session and the harness simply
+     vanished from the index with no error. A new Codex line shape is a
+     *feature* addition, not a rewrite: keep the old branch.
+6. **Minimal required fields**: sid, harness, date. Everything else is
    best-effort nullable — a record with gaps beats a dropped session.
-6. **Compaction / pruning**: extract from what is on disk now. Upsert-on-change
+7. **Compaction / pruning**: extract from what is on disk now. Upsert-on-change
    (see the index design) makes last-write-win the semantics; the excerpt
    sidecar preserves a pre-pruning view. When a transcript records *where* it was
    compacted — Codex writes a `{"type": "compacted"}` line — call

@@ -69,6 +69,105 @@ def test_codex_extract(tmp_path, codex_fixtures):
     assert "[private]" in rec.excerpt
 
 
+# --- codex, current rollout format (codex-cli 0.15x, desktop + CLI) --------
+
+CURRENT_UUID = "01a0820e-0000-7000-8000-00000000002e"
+
+
+def _current_session(root):
+    return (
+        root / "2026" / "09" / "08"
+        / f"rollout-2026-09-08T18-26-27-{CURRENT_UUID}.jsonl"
+    )
+
+
+@pytest.fixture
+def current_rec(tmp_path, codex_current_fixtures):
+    cfg = make_config(tmp_path, codex_dir=codex_current_fixtures)
+    rec = codex.extract(_current_session(codex_current_fixtures), cfg)
+    assert rec is not None, "current-format rollout must not be dropped"
+    return rec
+
+
+def test_codex_current_format_extracts(current_rec):
+    # The regression: turns moved from `event_msg`/`user_message` to
+    # `response_item`/`message`, so the legacy-only walk saw no human input and
+    # `finish()` returned None for every 0.15x session.
+    assert current_rec.sid == f"codex/{CURRENT_UUID}"
+    assert current_rec.native_id == CURRENT_UUID
+    assert current_rec.client == "Codex Desktop"
+    assert current_rec.cwd == "/home/u/proj"
+    assert current_rec.model == "gpt-6-astra"
+    # Date comes from the first *real* user turn, not from the injected one.
+    assert current_rec.date == "2026-09-08"
+
+
+def test_codex_current_format_counts_only_human_turns(current_rec):
+    roles = [line.split(":", 1)[0] for line in current_rec.excerpt.split("\n\n")]
+    assert roles.count("USER") == 2
+    assert roles.count("ASSISTANT") == 2
+    assert current_rec.turn_count == 4
+
+
+def test_codex_current_injected_user_messages_are_not_turns(current_rec):
+    # `<environment_context>` is written by Codex on the user's behalf.
+    assert "<environment_context>" not in current_rec.excerpt
+    assert "app-context" not in current_rec.excerpt
+
+
+def test_codex_current_duplicate_channels_count_once(current_rec):
+    # The same first turn is also present as a legacy `event_msg`/`user_message`
+    # and as an `item_completed`/`UserMessage` echo.
+    assert current_rec.excerpt.count("the parser drops every desktop session") == 1
+
+
+def test_codex_current_compacted_marks_one_boundary(current_rec):
+    assert current_rec.boundaries == [
+        {"event": "precompact", "trigger": "auto", "turn": 2}
+    ]
+
+
+def test_codex_current_excerpt_has_user_text_and_no_private_span(current_rec):
+    assert "the parser drops every desktop session" in current_rec.excerpt
+    assert "ship it" in current_rec.excerpt
+    assert "sk-secret-abc123" not in current_rec.excerpt
+    assert "[private]" in current_rec.excerpt
+
+
+def test_codex_current_tool_activity_is_harvested(current_rec):
+    # exec custom_tool_call -> command; its output -> tests + commit.
+    assert current_rec.tests == {"text": "3 passed", "broken": False}
+    assert any(sha == "abc1234" for sha, _ in current_rec.commits)
+    # item_completed items -> files, mcp, repo/branch.
+    assert ["M", "adapters/codex.py"] in current_rec.files
+    assert "codex_app" in current_rec.mcp
+    assert current_rec.repo == "acme/proj"
+    assert current_rec.branch == "main"
+
+
+def test_codex_current_argv_command_unwraps_login_shell():
+    assert codex._argv_to_command(["/bin/zsh", "-lc", "git status"]) == "git status"
+    assert codex._argv_to_command(["ls", "-la"]) == "ls -la"
+    assert codex._argv_to_command("already a string") == "already a string"
+    assert codex._argv_to_command([]) is None
+
+
+@pytest.mark.parametrize(
+    "text,injected",
+    [
+        ("<environment_context>\n<cwd>/x</cwd>", True),
+        ("  <user_instructions>be nice</user_instructions>", True),
+        ("<turn_aborted>", True),
+        ("# AGENTS.md instructions for /home/u/proj", True),
+        ("", True),
+        ("fix the parser", False),
+        ("# Files mentioned by the user:\n## notes.md", False),
+    ],
+)
+def test_codex_injected_user_text_detection(text, injected):
+    assert codex._is_injected_user_text(text) is injected
+
+
 def test_codex_headless_filtered(tmp_path, codex_headless_fixtures):
     cfg = make_config(tmp_path, codex_dir=codex_headless_fixtures)
     session = (
