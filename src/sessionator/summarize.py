@@ -31,10 +31,10 @@ from .adapters._common import SUMMARIZER_SENTINEL
 from .config import DEFAULT_SUMMARIZE, Config, load as load_config
 from .locking import FileLock, LockBusy
 from .schema import RESOLVED_VALUES, SUMMARY_FIELDS
+from .segments import INPUT_CAP, cap_text
 from .store import Store
 
 BATCH_SIZE = 8
-INPUT_CAP = 6000  # per-session excerpt chars fed to the summarizer
 WORK_STATES = ("pending", "stale", "error")
 
 _MARKER_RX = re.compile(r"@@(S\d+)@@")
@@ -138,11 +138,7 @@ def _group_by_cli(config, work):
 
 
 def _cap_excerpt(text: str) -> str:
-    if len(text) <= INPUT_CAP:
-        return text
-    head = text[: INPUT_CAP * 2 // 3]
-    tail = text[-INPUT_CAP // 3:]
-    return head + "\n...[trimmed]...\n" + tail
+    return cap_text(text, INPUT_CAP)
 
 
 def build_prompt(chunk) -> str:
