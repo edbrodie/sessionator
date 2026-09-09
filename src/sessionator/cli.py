@@ -1,6 +1,6 @@
 """Command-line entry point for sessionator.
 
-Seven product verbs (T-002), search implicit:
+Product verbs (T-002), search implicit:
 
 * ``sessionator <terms…> [filters]`` — bare invocation IS search (the 90% case).
 * ``sessionator show <sid-prefix>`` — full record + transcript tail + resume line.
@@ -9,10 +9,17 @@ Seven product verbs (T-002), search implicit:
 * ``sessionator status`` — config/sources/index health (doubles as doctor).
 * ``sessionator forget <sid|pattern>`` — privacy retire (stub here).
 * ``sessionator summarize <sid-prefix>`` — summarize one session now.
+* ``sessionator setup codex|status`` — install the Codex capture hooks, or report
+  how capture is wired up on this machine.
 
-Every command except the hidden ``_backfill`` runs a fast, non-blocking reconcile
-first (deterministic inline pass + detached summary backfill), so a query always
-sees the just-finished session and never waits on summaries.
+Query verbs run a fast, non-blocking reconcile first (deterministic inline pass +
+detached summary backfill), so a query always sees the just-finished session and
+never waits on summaries. ``setup``, ``forget`` and the hidden ``_backfill`` /
+``_hook_worker`` do not: configuring or retiring is not querying.
+
+``ingest --hook`` is the harness hook entry point and is special in every way
+that matters — it never prints, never exits non-zero, and never reaches argparse.
+See ``hooks.py``.
 
 Output discipline: **stdout = data only, stderr = diagnostics.** Exit codes
 follow grep — ``0`` hits, ``1`` zero hits, ``2`` error — so scripts branch
